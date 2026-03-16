@@ -1,0 +1,15 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*venv/
+.env
+
+# VS Code
+.vscode/
+
+# Machine Learning & Thesis specific
+data/
+checkpoints/
+logs/
+*.pth
+*.pt
