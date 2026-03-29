@@ -2,46 +2,47 @@ import numpy as np
 
 def compute_dense_reward(drone_pos, drone_vel, action, current_distance, is_collision, is_success, lidar_data, coin_collected):
     """
-    Computes a comprehensive and balanced reward signal to prevent local optima (suicide policy)
-    while encouraging exploration and coin collection.
+    Hunter Model (Reward Shaping for Goal-Oriented Behavior):
+    Prioritizes reaching the target (coin) over merely surviving.
+    Prevents 'ceiling hugging' and 'suicide' by balancing survival incentives with target proximity.
     """
     reward = 0.0
     
-    # 1. Distance Penalty (Significantly reduced to prevent instant suicide)
-    # The drone won't bleed points too fast, giving it time to explore.
-    reward -= 0.05 * current_distance
+    # 1. Alive Bonus (Significantly Reduced)
+    # Provides just enough incentive to stay in the air, acting as a baseline.
+    # It is kept low so the agent doesn't accumulate high scores just by hovering aimlessly.
+    reward += 0.02
     
-    # 2. Velocity Penalty (Softened)
-    # Penalizes excessive speeds to ensure stable flight, but allows movement.
+    # 2. Smart Distance Penalty (The "Gravity" towards the Target)
+    # At maximum room distance (~20m), the penalty is -0.02.
+    # This perfectly cancels out the Alive Bonus, making distant hovering yield zero net reward.
+    # As the drone approaches the target, the penalty decreases, creating a positive reward gradient.
+    reward -= 0.001 * current_distance
+    
+    # 3. Stability Penalties (Velocity and Control Effort)
+    # Penalizes erratic movements and excessive motor usage to encourage smooth flight.
     velocity_magnitude = np.linalg.norm(drone_vel)
-    reward -= 0.01 * velocity_magnitude
+    reward -= 0.001 * velocity_magnitude
     
-    # 3. Control Effort Penalty (Softened)
-    # Encourages smooth motor usage.
     effort = np.sum(np.square(action))
-    reward -= 0.005 * effort
+    reward -= 0.001 * effort
     
     # 4. Proximity Penalty (LiDAR-based Obstacle Avoidance)
-    # LiDAR values range from 0.0 to 1.0 (max range 5.0m).
-    # If the minimum LiDAR reading is below 0.1, the drone is dangerously close (< 0.5m) to a wall.
+    # Applies a penalty if the drone gets dangerously close (< 0.1 normalized distance) to walls/obstacles.
     min_lidar = np.min(lidar_data)
     if min_lidar < 0.1:
-        # Exponential penalty the closer it gets to the wall
-        reward -= 1.0 * (0.1 - min_lidar)
+        reward -= 0.5 * (0.1 - min_lidar)
     
-    # 5. Alive Bonus (Increased!)
-    # Makes hovering and staying alive mathematically better than crashing.
-    reward += 0.2
-    
-    # 6. CRITICAL: Single Coin Collection Reward
-    # The "Aha!" moment trigger. The drone gets a massive boost for eating a single coin.
+    # 5. THE ULTIMATE PRIZE: Single Coin Collection Reward
+    # A massive reward spike for successfully navigating to and consuming a coin.
+    # This solves the 'reward overshadowing' problem by making the goal highly profitable.
     if coin_collected:
-        reward += 100.0
+        reward += 300.0
     
-    # 7. Terminal Conditions
+    # 6. Terminal Conditions
     if is_success:
-        reward += 500.0  # Mission complete bonus
+        reward += 1000.0  # Mission complete bonus for clearing the entire room.
     elif is_collision:
-        reward -= 50.0   # Crash penalty (lowered slightly so it isn't terrified of exploring)
+        reward -= 50.0  # Severe penalty for crashing (floor, walls, ceiling, or obstacles).
         
     return reward

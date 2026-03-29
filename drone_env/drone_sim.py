@@ -194,7 +194,7 @@ class RoomDroneEnv(gym.Env):
             
         p.stepSimulation()
         
-        drone_pos, _ = p.getBasePositionAndOrientation(self.drone_id)
+        drone_pos, ori = p.getBasePositionAndOrientation(self.drone_id)
         drone_vel, _ = p.getBaseVelocity(self.drone_id)
         
         terminated = False
@@ -221,9 +221,17 @@ class RoomDroneEnv(gym.Env):
             info['is_success'] = True
             
         hx, hy, hz = self.room_bounds
+
+        euler = p.getEulerFromQuaternion(ori)
+        # Roll (X ekseninde yatma) veya Pitch (Y ekseninde yatma) 1.3 radyanı (~75 derece) geçerse drone devrilmiştir!
+        if abs(euler[0]) > 1.3 or abs(euler[1]) > 1.3:
+            is_collision = True
+            terminated = True
+            info['is_success'] = False
+
         if (abs(drone_pos[0]) > hx - 0.2 or 
             abs(drone_pos[1]) > hy - 0.2 or 
-            drone_pos[2] < 0.1 or 
+            drone_pos[2] < 0.3 or 
             drone_pos[2] > hz * 2 - 0.2):
             is_collision = True
             terminated = True
@@ -242,6 +250,8 @@ class RoomDroneEnv(gym.Env):
             
         obs = self._get_obs()
         lidar_data = obs[-16:]
+
+        info['is_success'] = is_success
 
         # NEW: Pass coin_collected to the reward function
         reward = compute_dense_reward(drone_pos, drone_vel, action, current_distance, is_collision, is_success, lidar_data, coin_collected)
