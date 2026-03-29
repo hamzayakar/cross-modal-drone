@@ -6,28 +6,25 @@ import numpy as np
 import math
 import os
 
-# Import the custom reward logic
 from .reward_functions import compute_dense_reward
 
 class RoomDroneEnv(gym.Env):
-    """
-    A 16x16m complex closed room environment with random obstacles and coins.
-    State Space: 32-D (16 Kinematics + 16 LiDAR Raycasts)
-    Action Space: 4-D continuous vector (motor thrusts).
-    """
-    def __init__(self, gui=False):
+    def __init__(self, gui=False, num_obstacles=0, randomize_obstacles=False, randomize_coins=False, reward_weights=None):
         super().__init__()
         
         self.client = p.connect(p.GUI if gui else p.DIRECT)
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
         
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(4,), dtype=np.float32)
-        
-        # UPGRADED STATE SPACE: 16 Base + 16 Lidar = 32-D
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(32,), dtype=np.float32)
         
         self.room_bounds = [8.0, 8.0, 4.0]
-        self.max_steps = 14400 # 1 minute
+        self.max_steps = 14400 
+        
+        self.num_obstacles = num_obstacles
+        self.randomize_obstacles = randomize_obstacles
+        self.randomize_coins = randomize_coins
+        self.reward_weights = reward_weights
         
         self.drone_id = None
         self.wall_ids = []
@@ -35,12 +32,10 @@ class RoomDroneEnv(gym.Env):
         self.obstacle_positions = [] 
         self.gold_data = []
         
-        # LiDAR Settings
         self.num_rays = 16
-        self.lidar_range = 5.0 # Max sensing distance in meters
+        self.lidar_range = 5.0 
 
     def _build_closed_room(self):
-        """Constructs the room boundaries using semi-transparent glass-like walls."""
         wall_half_thickness = 0.1
         h_x, h_y, h_z = self.room_bounds
         
@@ -62,30 +57,33 @@ class RoomDroneEnv(gym.Env):
             self.wall_ids.append(w_id)
 
     def _spawn_obstacles(self):
-        """Spawns 20-30 random cylindrical and cubic obstacles."""
         self.obstacle_ids = []
         self.obstacle_positions = []
         
-        num_obstacles = np.random.randint(20, 31)
-        
-        for _ in range(num_obstacles):
-            ox = np.random.uniform(-7.0, 7.0)
-            oy = np.random.uniform(-7.0, 7.0)
+        if self.num_obstacles == 0:
+            return
+            
+        # Pin the random seed for reproducibility if not randomizing obstacles
+        rng = np.random.default_rng(seed=42) if not self.randomize_obstacles else np.random.default_rng()
+            
+        for _ in range(self.num_obstacles):
+            ox = rng.uniform(-7.0, 7.0)
+            oy = rng.uniform(-7.0, 7.0)
             
             if math.sqrt(ox**2 + oy**2) < 1.0:
                 continue
                 
-            oz_half = np.random.uniform(1.0, 3.0) 
-            is_cylinder = np.random.choice([True, False])
+            oz_half = rng.uniform(1.0, 3.0) 
+            is_cylinder = rng.choice([True, False])
             
             if is_cylinder:
-                radius = np.random.uniform(0.2, 0.6)
+                radius = rng.uniform(0.2, 0.6)
                 col_id = p.createCollisionShape(p.GEOM_CYLINDER, radius=radius, height=oz_half*2)
                 vis_id = p.createVisualShape(p.GEOM_CYLINDER, radius=radius, length=oz_half*2, rgbaColor=[0.4, 0.4, 0.5, 1])
                 safe_radius = radius + 0.2
             else:
-                ext_x = np.random.uniform(0.2, 0.6)
-                ext_y = np.random.uniform(0.2, 0.6)
+                ext_x = rng.uniform(0.2, 0.6)
+                ext_y = rng.uniform(0.2, 0.6)
                 col_id = p.createCollisionShape(p.GEOM_BOX, halfExtents=[ext_x, ext_y, oz_half])
                 vis_id = p.createVisualShape(p.GEOM_BOX, halfExtents=[ext_x, ext_y, oz_half], rgbaColor=[0.5, 0.4, 0.4, 1])
                 safe_radius = max(ext_x, ext_y) + 0.2
@@ -95,8 +93,19 @@ class RoomDroneEnv(gym.Env):
             self.obstacle_positions.append({"pos": [ox, oy], "safe_radius": safe_radius})
 
     def _spawn_coins_safely(self):
-        """Spawns coins using Rejection Sampling."""
         self.gold_data = []
+        
+        if not self.randomize_coins:
+            fixed_positions = [
+                [4.0, 4.0, 2.0], [-4.0, 4.0, 2.0],
+                [4.0, -4.0, 2.0], [-4.0, -4.0, 2.0]
+            ]
+            for pos in fixed_positions:
+                vs = p.createVisualShape(p.GEOM_SPHERE, radius=0.12, rgbaColor=[1, 0.84, 0, 1])
+                gid = p.createMultiBody(baseMass=0, baseVisualShapeIndex=vs, basePosition=pos)
+                self.gold_data.append({"id": gid, "pos": pos})
+            return
+
         num_coins = np.random.randint(10, 18)
         attempts = 0
         
@@ -132,7 +141,6 @@ class RoomDroneEnv(gym.Env):
         self._spawn_obstacles()
         
         urdf_path = os.path.join(os.path.dirname(__file__), "cf2x.urdf")
-        # UPDATED: Drone starts at 2.0m height to avoid instant floor collisions
         self.drone_id = p.loadURDF(urdf_path, [0, 0, 2.0], globalScaling=4.0)
         p.changeDynamics(self.drone_id, -1, mass=1.0)
                                           
@@ -141,14 +149,8 @@ class RoomDroneEnv(gym.Env):
         return self._get_obs(), {}
 
     def _compute_lidar(self, drone_pos):
-        """
-        Casts 16 mathematical rays around the drone to detect obstacles.
-        Returns a normalized array [0.0 - 1.0] where 1.0 means no obstacle in range.
-        """
         ray_starts = []
         ray_ends = []
-        
-        # Offset to prevent the ray from hitting the drone's own body
         offset = 0.25 
         
         for i in range(self.num_rays):
@@ -186,7 +188,7 @@ class RoomDroneEnv(gym.Env):
     def step(self, action):
         self.current_step += 1
         
-        forces = np.clip(action, -1.0, 1.0) * 15.0 
+        forces = np.clip(action, -1.0, 1.0) * 10.0 
         rotor_offsets = [[0.12, 0.12, 0], [-0.12, 0.12, 0], [-0.12, -0.12, 0], [0.12, -0.12, 0]]
         
         for i in range(4):
@@ -202,7 +204,7 @@ class RoomDroneEnv(gym.Env):
         info = {}
         is_success = False
         is_collision = False
-        coin_collected = False # NEW: Track if a coin was eaten this step
+        coin_collected = False 
         current_distance = 0.0
         
         if len(self.gold_data) > 0:
@@ -213,7 +215,7 @@ class RoomDroneEnv(gym.Env):
             if current_distance < 0.4: 
                 p.removeBody(self.gold_data[closest_idx]["id"])
                 self.gold_data.pop(closest_idx)
-                coin_collected = True # NEW: Coin successfully collected!
+                coin_collected = True 
                 
         if len(self.gold_data) == 0:
             is_success = True
@@ -223,7 +225,6 @@ class RoomDroneEnv(gym.Env):
         hx, hy, hz = self.room_bounds
 
         euler = p.getEulerFromQuaternion(ori)
-        # Roll (X ekseninde yatma) veya Pitch (Y ekseninde yatma) 1.3 radyanı (~75 derece) geçerse drone devrilmiştir!
         if abs(euler[0]) > 1.3 or abs(euler[1]) > 1.3:
             is_collision = True
             terminated = True
@@ -250,11 +251,13 @@ class RoomDroneEnv(gym.Env):
             
         obs = self._get_obs()
         lidar_data = obs[-16:]
-
         info['is_success'] = is_success
 
-        # NEW: Pass coin_collected to the reward function
-        reward = compute_dense_reward(drone_pos, drone_vel, action, current_distance, is_collision, is_success, lidar_data, coin_collected)
+        reward = compute_dense_reward(
+            drone_pos, drone_vel, action, current_distance, 
+            is_collision, is_success, lidar_data, coin_collected, 
+            reward_weights=self.reward_weights
+        )
             
         return obs, reward, terminated, truncated, info
 
