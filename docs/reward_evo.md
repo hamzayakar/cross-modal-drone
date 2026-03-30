@@ -100,3 +100,21 @@ fixed_positions = [
     [4.0, 4.0, 2.0],
     [-4.0, -4.0, 2.0]
 ]
+
+
+## Stage 0.1: Kamikaze Policy (Economic Reform)
+**Behavior:** The agent successfully solved the Sparse Reward problem and grabbed the first coin (+300). However, it refused to learn how to brake or stabilize. It discovered a mathematical loophole: diving aggressively into the coin and immediately crashing (-50) yielded a massive net profit of +250. It optimized for a quick death rather than sustainable flight.
+**Fix:** Restructured the reward economy in the YAML configuration. Increased distance and velocity penalties to discourage erratic, high-speed dives. Crucially, matched the `collision_penalty` (300) to the `coin_collection_reward` (300). Now, crashing immediately after collecting a coin results in a net-zero sum, forcing the agent to learn deceleration and hover stabilization to preserve its profits.
+
+**Code Changes:**
+```yaml
+# CHANGED: configs/teacher_ppo.yaml
+# OLD:
+  distance_penalty_multiplier: 0.001
+  velocity_penalty_multiplier: 0.001
+  collision_penalty: 50.0
+
+# NEW: Enforcing sustainable flight economics
+  distance_penalty_multiplier: 0.02
+  velocity_penalty_multiplier: 0.01
+  collision_penalty: 300.0  # Matched to coin reward to kill the Kamikaze profit
