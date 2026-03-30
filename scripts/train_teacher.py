@@ -86,7 +86,7 @@ if __name__ == "__main__":
     model.learn(total_timesteps=3_000_000, 
                 tb_log_name=RUN_NAME,
                 callback=eval_callback,
-                reset_num_timesteps=False) # Ensures TensorBoard steps don't reset to 0
+                reset_num_timesteps=True)
     
     # Save the final model just in case it didn't hit the threshold early
     final_model_path = os.path.join(stage_model_dir, f"teacher_ppo_{RUN_NAME}_final")
