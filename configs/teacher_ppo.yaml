@@ -6,27 +6,27 @@ stages:
     num_obstacles: 0
     randomize_obstacles: False
     randomize_coins: False
-    run_name: "Stage_0_Empty_FixedCoins"
+    run_name: "Stage_0_Empty_FixedCoins_BigBrain"
   stage_1:
     num_obstacles: 0
     randomize_obstacles: False
     randomize_coins: True
-    run_name: "Stage_1_Empty_RandomCoins"
+    run_name: "Stage_1_Empty_RandomCoins_BigBrain"
   stage_2:
     num_obstacles: 20
     randomize_obstacles: False
     randomize_coins: False
-    run_name: "Stage_2_FixedObs_FixedCoins"
+    run_name: "Stage_2_FixedObs_FixedCoins_BigBrain"
   stage_3:
     num_obstacles: 20
     randomize_obstacles: False
     randomize_coins: True
-    run_name: "Stage_3_FixedObs_RandomCoins"
+    run_name: "Stage_3_FixedObs_RandomCoins_BigBrain"
   stage_4:
     num_obstacles: 20
     randomize_obstacles: True
     randomize_coins: True
-    run_name: "Stage_4_RandomObs_RandomCoins"
+    run_name: "Stage_4_RandomObs_RandomCoins_BigBrain"
 
 # ==========================================
 # REWARD WEIGHTS (Hunter Model)

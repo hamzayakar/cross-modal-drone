@@ -212,10 +212,14 @@ class RoomDroneEnv(gym.Env):
         
         rotor_offsets = [[0.12, 0.12, 0], [-0.12, 0.12, 0], [-0.12, -0.12, 0], [0.12, -0.12, 0]]
         
-        for i in range(4):
-            p.applyExternalForce(self.drone_id, -1, forceObj=[0, 0, forces[i]], posObj=rotor_offsets[i], flags=p.LINK_FRAME)
-            
-        p.stepSimulation()
+        # --- CRITICAL FIX: ACTION REPEAT (FRAME SKIP) ---
+        # Instead of deciding at 240Hz, the agent decides at 60Hz.
+        # The same motor force is applied for 4 consecutive physics steps.
+        # This prevents jitter and allows the agent to "feel" the momentum of its actions.
+        for _ in range(4):
+            for i in range(4):
+                p.applyExternalForce(self.drone_id, -1, forceObj=[0, 0, forces[i]], posObj=rotor_offsets[i], flags=p.LINK_FRAME)
+            p.stepSimulation()
         
         drone_pos, ori = p.getBasePositionAndOrientation(self.drone_id)
         drone_vel, _ = p.getBaseVelocity(self.drone_id)

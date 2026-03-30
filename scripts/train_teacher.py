@@ -55,7 +55,7 @@ if __name__ == "__main__":
     # Stop training early if the agent masters the room (reaches 2000 reward)
     callback_on_best = StopTrainingOnRewardThreshold(reward_threshold=2000.0, verbose=1)
     eval_callback = EvalCallback(eval_env, 
-                                 best_model_save_path=stage_model_dir, # Saves to the specific stage folder!
+                                 best_model_save_path=stage_model_dir, 
                                  log_path=log_dir, 
                                  eval_freq=10000, 
                                  deterministic=True, 
@@ -63,7 +63,6 @@ if __name__ == "__main__":
                                  callback_on_new_best=callback_on_best)
     
     # 6. Transfer Learning (Curriculum) Logic
-    # If we are on Stage > 0, find the best brain from the previous stage and load it
     if args.stage > 0:
         prev_stage_key = f"stage_{args.stage - 1}"
         prev_run_name = config['stages'][prev_stage_key]['run_name']
@@ -74,16 +73,18 @@ if __name__ == "__main__":
             model = PPO.load(prev_model_path, env=env, tensorboard_log=log_dir)
         else:
             print(f"WARNING: {prev_model_path} not found! Starting from scratch.")
-            policy_kwargs = dict(net_arch=dict(pi=[64, 64], vf=[64, 64]))
-            model = PPO("MlpPolicy", env, verbose=1, tensorboard_log=log_dir, learning_rate=0.0003, batch_size=64, policy_kwargs=policy_kwargs)
+            # UPGRADED BRAIN: 256x256 for complex 3D flight dynamics
+            policy_kwargs = dict(net_arch=dict(pi=[256, 256], vf=[256, 256]))
+            model = PPO("MlpPolicy", env, verbose=1, tensorboard_log=log_dir, learning_rate=0.0003, batch_size=128, policy_kwargs=policy_kwargs)
     else:
-        print("Stage 0: Creating a fresh brain from scratch...")
-        policy_kwargs = dict(net_arch=dict(pi=[64, 64], vf=[64, 64]))
-        model = PPO("MlpPolicy", env, verbose=1, tensorboard_log=log_dir, learning_rate=0.0003, batch_size=64, policy_kwargs=policy_kwargs)
+        print("Stage 0: Creating a fresh, high-capacity brain from scratch...")
+        # UPGRADED BRAIN: 256x256 architecture
+        policy_kwargs = dict(net_arch=dict(pi=[256, 256], vf=[256, 256]))
+        model = PPO("MlpPolicy", env, verbose=1, tensorboard_log=log_dir, learning_rate=0.0003, batch_size=128, policy_kwargs=policy_kwargs)
     
     # 7. Start Training
     print("Training is live! Monitor progress via TensorBoard.")
-    model.learn(total_timesteps=3_000_000, 
+    model.learn(total_timesteps=10_000_000, 
                 tb_log_name=RUN_NAME,
                 callback=eval_callback,
                 reset_num_timesteps=True)

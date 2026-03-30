@@ -1,3 +1,45 @@
+# Architectural Manifesto: Physics & Math Justification
+
+Before detailing the evolutionary stages of the agent's behavior, it is crucial to establish that the underlying physics engine, reward functions, and spatial geometry are mathematically sound and physically realistic. The training bottlenecks encountered were cognitive (agent capacity) rather than environmental.
+
+## 1. Thrust-to-Weight Ratio and Hover Bias
+- **Drone Mass:** $1.0 \text{ kg}$
+- **Gravity:** $9.81 \text{ m/s}^2$
+- **Hover Force Required:** $2.4525 \text{ N}$ per motor.
+
+The control space maps the agent's continuous output $[-1.0, 1.0]$ to motor thrust using the formula:
+$$F = 2.45 + (\text{action} \times 5.0)$$
+
+This means an output of $0.0$ perfectly counteracts gravity, creating a natural **Hover Bias**. Furthermore, the maximum possible thrust per motor is $7.45 \text{ N}$, resulting in a total upward force of $\approx 29.8 \text{ N}$. This gives the drone a **3:1 Thrust-to-Weight Ratio**, which perfectly mirrors the agile flight dynamics of real-world racing quadcopters. The forces are clamped between $[0.0, 10.0]$ to strictly prevent physically impossible negative thrust.
+
+## 2. The Curriculum Initialization Distance ("The Golden Ratio")
+In Stage 0, the first coin is spawned exactly $1.0 \text{ meter}$ in front of the drone. This is not an arbitrary number; it mathematically balances the reward economy to prevent the agent from bleeding points simply for existing.
+
+Based on our YAML config:
+- `alive_bonus`: $0.02$
+- `distance_penalty_multiplier`: $0.02$
+
+The net reward at spawn is calculated as:
+$$\text{Net Reward} = \text{Alive Bonus} - (\text{Distance Penalty} \times \text{Distance})$$
+$$\text{Net Reward} = 0.02 - (0.02 \times 1.0) = \mathbf{0.0}$$
+
+At a distance of exactly $1.0 \text{ m}$, the agent receives exactly $0.0$ points per step. It does not suffer penalty bleed, nor does it farm free points. If the agent moves even $1 \text{ cm}$ closer (distance $= 0.99 \text{ m}$), the equation yields a positive reward, instantly teaching the agent that forward movement equals profit.
+
+## 3. Cognitive Upgrades (Resolving the Training Bottleneck)
+Despite a mathematically perfect environment, the initial `[64, 64]` Multilayer Perceptron (MLP) architecture failed to learn stable flight. 
+
+- **Brain Capacity:** Controlling 4 independent rotors in 3D space based on a 32-D observation vector (Kinematics + 16-ray Lidar) requires significant cross-correlation capabilities. The network was upgraded to an industry-standard `[256, 256]` architecture to provide the necessary capacity for complex aerodynamic modeling (such as pitch braking without overshoot).
+- **Time Perception (Action Repeat):** Operating at $240\text{Hz}$, the agent was deciding every $4\text{ms}$. This created "panicked oscillations" because the agent was changing inputs faster than the physical momentum could react. By implementing a Frame Skip of 4 (Control frequency: $60\text{Hz}$), the agent now holds a motor command steady for $16\text{ms}$, allowing it to accurately perceive the physical consequences of its thrust.
+
+
+
+
+
+
+
+
+
+
 # Evolution of the Drone Reward Function & Constraint Shaping
 
 This document logs the chronological evolution of our RL agent's behavior, detailing the "Reward Hacking" (local optima) bugs encountered and the mathematical/physical fixes applied to reach the final `Hunter Model` policy.
@@ -52,7 +94,7 @@ reward -= 0.001 * effort
 ```
 
 ## Phase 3: Ceiling Hugging (Icarus Effect)
-**Behavior:** With the suicide bug fixed, the agent realized that the `Alive Bonus` was so high, and the `Distance Penalty` so low, that it didn't need to hunt for coins. It just flew straight up to the ceiling (where there are no obstacles) and safely hovered there to farm points.
+**Behavior:** With the suicide bug fixed, the agent realized that the `Alive Bonus` was so high, and the `Distance Penalty` so low, that it didn't need to hunt for coins. It just flew straight up to the ceiling (where there are no obstacles) and crushed to the ceiling (as it couldn't learn to safely hover yet).
 **Fix:** Implemented the final **Hunter Model**. Drastically reduced the alive bonus, tied it mathematically to the distance penalty (canceling each other out at long ranges), and significantly increased the coin reward.
 
 **Code Changes:**
