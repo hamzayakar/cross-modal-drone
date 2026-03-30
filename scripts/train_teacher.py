@@ -4,10 +4,21 @@ import argparse
 import yaml
 from stable_baselines3 import PPO
 from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.callbacks import EvalCallback, StopTrainingOnRewardThreshold
+from stable_baselines3.common.callbacks import EvalCallback, StopTrainingOnRewardThreshold, BaseCallback, CallbackList
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from drone_env.drone_sim import RoomDroneEnv
+
+class SaveLatestCallback(BaseCallback):
+    def __init__(self, save_path, save_freq, verbose=0):
+        super().__init__(verbose)
+        self.save_path = save_path
+        self.save_freq = save_freq
+
+    def _on_step(self) -> bool:
+        if self.n_calls % self.save_freq == 0:
+            self.model.save(self.save_path)
+        return True
 
 if __name__ == "__main__":
     # 1. Parse CLI arguments
@@ -39,7 +50,6 @@ if __name__ == "__main__":
     log_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'logs', 'teacher_ppo'))
     model_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'models'))
     
-    # CRITICAL: Each curriculum stage gets its own dedicated model folder
     stage_model_dir = os.path.join(model_dir, RUN_NAME) 
     os.makedirs(log_dir, exist_ok=True)
     os.makedirs(stage_model_dir, exist_ok=True)
@@ -51,9 +61,9 @@ if __name__ == "__main__":
     eval_env = RoomDroneEnv(gui=False, num_obstacles=NUM_OBS, randomize_obstacles=RAND_OBS, randomize_coins=RAND_COINS, reward_weights=reward_weights)
     eval_env = Monitor(eval_env)
     
-    # 5. Setup Callbacks
-    # Stop training early if the agent masters the room (reaches 2000 reward)
+    # 5. Setup Callbacks (Hem Vitrin hem Canlı Yayın)
     callback_on_best = StopTrainingOnRewardThreshold(reward_threshold=2000.0, verbose=1)
+    
     eval_callback = EvalCallback(eval_env, 
                                  best_model_save_path=stage_model_dir, 
                                  log_path=log_dir, 
@@ -61,6 +71,11 @@ if __name__ == "__main__":
                                  deterministic=True, 
                                  render=False,
                                  callback_on_new_best=callback_on_best)
+                                 
+    latest_model_path = os.path.join(stage_model_dir, "latest_model")
+    save_latest_callback = SaveLatestCallback(save_path=latest_model_path, save_freq=10000)
+    
+    callback_list = CallbackList([eval_callback, save_latest_callback])
     
     # 6. Transfer Learning (Curriculum) Logic
     if args.stage > 0:
@@ -73,12 +88,10 @@ if __name__ == "__main__":
             model = PPO.load(prev_model_path, env=env, tensorboard_log=log_dir)
         else:
             print(f"WARNING: {prev_model_path} not found! Starting from scratch.")
-            # UPGRADED BRAIN: 256x256 for complex 3D flight dynamics
             policy_kwargs = dict(net_arch=dict(pi=[256, 256], vf=[256, 256]))
             model = PPO("MlpPolicy", env, verbose=1, tensorboard_log=log_dir, learning_rate=0.0003, batch_size=128, policy_kwargs=policy_kwargs)
     else:
         print("Stage 0: Creating a fresh, high-capacity brain from scratch...")
-        # UPGRADED BRAIN: 256x256 architecture
         policy_kwargs = dict(net_arch=dict(pi=[256, 256], vf=[256, 256]))
         model = PPO("MlpPolicy", env, verbose=1, tensorboard_log=log_dir, learning_rate=0.0003, batch_size=128, policy_kwargs=policy_kwargs)
     
@@ -86,7 +99,7 @@ if __name__ == "__main__":
     print("Training is live! Monitor progress via TensorBoard.")
     model.learn(total_timesteps=10_000_000, 
                 tb_log_name=RUN_NAME,
-                callback=eval_callback,
+                callback=callback_list,
                 reset_num_timesteps=True)
     
     # Save the final model just in case it didn't hit the threshold early

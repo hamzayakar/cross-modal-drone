@@ -29,15 +29,7 @@ At a distance of exactly $1.0 \text{ m}$, the agent receives exactly $0.0$ point
 Despite a mathematically perfect environment, the initial `[64, 64]` Multilayer Perceptron (MLP) architecture failed to learn stable flight. 
 
 - **Brain Capacity:** Controlling 4 independent rotors in 3D space based on a 32-D observation vector (Kinematics + 16-ray Lidar) requires significant cross-correlation capabilities. The network was upgraded to an industry-standard `[256, 256]` architecture to provide the necessary capacity for complex aerodynamic modeling (such as pitch braking without overshoot).
-- **Time Perception (Action Repeat):** Operating at $240\text{Hz}$, the agent was deciding every $4\text{ms}$. This created "panicked oscillations" because the agent was changing inputs faster than the physical momentum could react. By implementing a Frame Skip of 4 (Control frequency: $60\text{Hz}$), the agent now holds a motor command steady for $16\text{ms}$, allowing it to accurately perceive the physical consequences of its thrust.
-
-
-
-
-
-
-
-
+- **High-Frequency Control (240Hz):** Real-world quadcopters require extremely high-frequency PID loops (often 400Hz+) to maintain stability. The agent directly controls the rotors at the simulation frequency of 240Hz, allowing for micro-corrections and preventing unrecoverable aerodynamic flips.
 
 
 # Evolution of the Drone Reward Function & Constraint Shaping
@@ -113,9 +105,8 @@ reward -= 0.001 * effort
 ```
 
 
-
-
 # Curriculum Tuning Log (Hyperparameters)
+
 ## Stage 0: The Kamikaze Dive & Sparse Reward (Action Mapping & Curriculum Init)
 **Behavior:** Even with perfectly tuned dense rewards, the agent failed to learn and showed a flatline learning curve. It suffered from two critical issues: 
 1. The raw action output of `0.0` resulted in `0 N` thrust, causing the drone to drop like a rock. Negative actions caused physically impossible reverse thrust, pulling the drone into an immediate 75-degree fatal tilt.
@@ -142,7 +133,7 @@ fixed_positions = [
     [4.0, 4.0, 2.0],
     [-4.0, -4.0, 2.0]
 ]
-
+```
 
 ## Stage 0.1: Kamikaze Policy (Economic Reform)
 **Behavior:** The agent successfully solved the Sparse Reward problem and grabbed the first coin (+300). However, it refused to learn how to brake or stabilize. It discovered a mathematical loophole: diving aggressively into the coin and immediately crashing (-50) yielded a massive net profit of +250. It optimized for a quick death rather than sustainable flight.
@@ -160,3 +151,4 @@ fixed_positions = [
   distance_penalty_multiplier: 0.02
   velocity_penalty_multiplier: 0.01
   collision_penalty: 300.0  # Matched to coin reward to kill the Kamikaze profit
+```
