@@ -23,7 +23,7 @@ class SaveLatestCallback(BaseCallback):
 if __name__ == "__main__":
     # 1. Parse CLI arguments
     parser = argparse.ArgumentParser(description="Train Drone PPO with Curriculum Stages")
-    parser.add_argument("--stage", type=int, default=0, help="Training stage level (0-4)")
+    parser.add_argument("--stage", type=int, default=0, help="Training stage level (0-5)")
     args = parser.parse_args()
 
     # 2. Load configurations from YAML
@@ -42,6 +42,7 @@ if __name__ == "__main__":
     NUM_OBS = stage_config['num_obstacles']
     RAND_OBS = stage_config['randomize_obstacles']
     RAND_COINS = stage_config['randomize_coins']
+    LOCK_Z = stage_config['lock_z'] # YAML'dan oku
     RUN_NAME = stage_config['run_name']
 
     print(f"[{RUN_NAME}] Training Initialized (GUI Disabled for speed)...")
@@ -54,15 +55,15 @@ if __name__ == "__main__":
     os.makedirs(log_dir, exist_ok=True)
     os.makedirs(stage_model_dir, exist_ok=True)
     
-    # 4. Initialize Environments
-    env = RoomDroneEnv(gui=False, num_obstacles=NUM_OBS, randomize_obstacles=RAND_OBS, randomize_coins=RAND_COINS, reward_weights=reward_weights)
+    # 4. Initialize Environments (lock_z dahil edildi)
+    env = RoomDroneEnv(gui=False, num_obstacles=NUM_OBS, randomize_obstacles=RAND_OBS, randomize_coins=RAND_COINS, lock_z=LOCK_Z, reward_weights=reward_weights)
     env = Monitor(env, log_dir)
     
-    eval_env = RoomDroneEnv(gui=False, num_obstacles=NUM_OBS, randomize_obstacles=RAND_OBS, randomize_coins=RAND_COINS, reward_weights=reward_weights)
+    eval_env = RoomDroneEnv(gui=False, num_obstacles=NUM_OBS, randomize_obstacles=RAND_OBS, randomize_coins=RAND_COINS, lock_z=LOCK_Z, reward_weights=reward_weights)
     eval_env = Monitor(eval_env)
     
-    # 5. Setup Callbacks (Hem Vitrin hem Canlı Yayın)
-    callback_on_best = StopTrainingOnRewardThreshold(reward_threshold=2000.0, verbose=1)
+    # 5. Setup Callbacks (Eşik 1600.0)
+    callback_on_best = StopTrainingOnRewardThreshold(reward_threshold=1600.0, verbose=1)
     
     eval_callback = EvalCallback(eval_env, 
                                  best_model_save_path=stage_model_dir, 

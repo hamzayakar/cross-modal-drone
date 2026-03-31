@@ -9,7 +9,7 @@ import os
 from .reward_functions import compute_dense_reward
 
 class RoomDroneEnv(gym.Env):
-    def __init__(self, gui=False, num_obstacles=0, randomize_obstacles=False, randomize_coins=False, reward_weights=None):
+    def __init__(self, gui=False, num_obstacles=0, randomize_obstacles=False, randomize_coins=False, lock_z=False, reward_weights=None):
         super().__init__()
         
         self.client = p.connect(p.GUI if gui else p.DIRECT)
@@ -26,6 +26,7 @@ class RoomDroneEnv(gym.Env):
         self.num_obstacles = num_obstacles
         self.randomize_obstacles = randomize_obstacles
         self.randomize_coins = randomize_coins
+        self.lock_z = lock_z
         self.reward_weights = reward_weights
         
         self.drone_id = None
@@ -219,6 +220,14 @@ class RoomDroneEnv(gym.Env):
             p.applyExternalForce(self.drone_id, -1, forceObj=[0, 0, forces[i]], posObj=rotor_offsets[i], flags=p.LINK_FRAME)
             
         p.stepSimulation()
+
+        # --- HOVERCRAFT MODE (Programmatic Z-Lock) ---
+        if self.lock_z:
+            pos, ori = p.getBasePositionAndOrientation(self.drone_id)
+            lin_vel, ang_vel = p.getBaseVelocity(self.drone_id)
+            # Reset position to exactly Z=2.0 and kill vertical velocity
+            p.resetBasePositionAndOrientation(self.drone_id, [pos[0], pos[1], 2.0], ori)
+            p.resetBaseVelocity(self.drone_id, [lin_vel[0], lin_vel[1], 0.0], ang_vel)
         
         drone_pos, ori = p.getBasePositionAndOrientation(self.drone_id)
         drone_vel, _ = p.getBaseVelocity(self.drone_id)

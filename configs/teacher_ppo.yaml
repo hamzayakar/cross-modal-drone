@@ -6,27 +6,38 @@ stages:
     num_obstacles: 0
     randomize_obstacles: False
     randomize_coins: False
-    run_name: "Stage_0_Empty_FixedCoins_BigBrain"
+    lock_z: True
+    run_name: "Stage_0_Hovercraft_2D"
   stage_1:
     num_obstacles: 0
     randomize_obstacles: False
-    randomize_coins: True
-    run_name: "Stage_1_Empty_RandomCoins_BigBrain"
-  stage_2:
-    num_obstacles: 20
-    randomize_obstacles: False
     randomize_coins: False
-    run_name: "Stage_2_FixedObs_FixedCoins_BigBrain"
+    lock_z: False
+    run_name: "Stage_1_FixedCoins_3D"
+  stage_2:
+    num_obstacles: 0
+    randomize_obstacles: False
+    randomize_coins: True
+    lock_z: False
+    run_name: "Stage_2_RandomCoins_3D"
   stage_3:
     num_obstacles: 20
     randomize_obstacles: False
-    randomize_coins: True
-    run_name: "Stage_3_FixedObs_RandomCoins_BigBrain"
+    randomize_coins: False
+    lock_z: False
+    run_name: "Stage_3_FixedObs_FixedCoins_3D"
   stage_4:
+    num_obstacles: 20
+    randomize_obstacles: False
+    randomize_coins: True
+    lock_z: False
+    run_name: "Stage_4_FixedObs_RandomCoins_3D"
+  stage_5:
     num_obstacles: 20
     randomize_obstacles: True
     randomize_coins: True
-    run_name: "Stage_4_RandomObs_RandomCoins_BigBrain"
+    lock_z: False
+    run_name: "Stage_5_RandomObs_RandomCoins_3D"
 
 # ==========================================
 # REWARD WEIGHTS (Hunter Model)

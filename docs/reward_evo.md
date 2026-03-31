@@ -152,3 +152,26 @@ fixed_positions = [
   velocity_penalty_multiplier: 0.01
   collision_penalty: 300.0  # Matched to coin reward to kill the Kamikaze profit
 ```
+
+## Stage 0.2: The Local Optima Trap & Hovercraft Mode (Task Decomposition)
+**Behavior:** After 4 Million steps, the agent's entropy dropped from -6 to -1, and its reward flatlined perfectly at -50. It learned that hitting the first coin (+300) and immediately losing control due to coupled dynamics (pitching forward causes altitude loss, correcting altitude causes upward rocket momentum) and crashing into the ceiling (-300) was the safest bet. It refused to explore further.
+**Fix:** Implemented **"Hovercraft Mode" (Z-Axis Lock)** for Stage 0. By dynamically locking the drone's Z-coordinate to 2.0 meters programmatically, we removed gravity and altitude control from the agent's cognitive load. The agent can now safely pitch, roll, and yaw to translate across the X/Y plane without catastrophic Z-axis momentum spikes. This allows it to learn targeting and braking in 2D before unlocking full 3D physics in Stage 1.
+
+**Code Changes:**
+```yaml
+# ADDED in YAML: lock_z flag dynamically controls Hovercraft Mode
+  stage_0:
+    lock_z: True # 2D Hovercraft
+  stage_1:
+    lock_z: False # 3D Full Flight
+```
+
+```python
+# ADDED in drone_sim.py step(): Programmatic Z-Lock (Hovercraft Mode)
+if self.lock_z:
+    pos, ori = p.getBasePositionAndOrientation(self.drone_id)
+    lin_vel, ang_vel = p.getBaseVelocity(self.drone_id)
+    # Reset position to Z=2.0, kill Z velocity
+    p.resetBasePositionAndOrientation(self.drone_id, [pos[0], pos[1], 2.0], ori)
+    p.resetBaseVelocity(self.drone_id, [lin_vel[0], lin_vel[1], 0.0], ang_vel)
+```
