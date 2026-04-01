@@ -385,3 +385,24 @@ self.prev_action = action.copy()
 # OLD: effort_penalty_multiplier: 0.0
 # NEW: smoothness_penalty_multiplier: 0.05
 ```
+
+## Stage 0.11: Asymmetric Actor-Critic & Preventing Perceptual Aliasing (49-D Ego-Centric State)
+
+**Behavior:** During architectural review for the upcoming Cross-Modal Distillation (Teacher MLP -> Student CNN), a severe "Modality Mismatch" vulnerability was identified. The Teacher was receiving Global X, Y coordinates (`drone_pos`). If the Teacher's policy optimized around global spatial memorization (e.g., "fly to absolute coordinate [3, 4]"), the Student CNN—which only perceives local pixel data—would suffer from "Perceptual Aliasing" (inability to distinguish visually identical opposite corners of the room) and fail to mimic the Teacher. Furthermore, the 16-ray LiDAR resolution was deemed too sparse, risking physical objects slipping between rays, which would poison the Teacher's logic dataset.
+**Fix:** The observation space was completely purged of any "God-Mode" global positioning, while retaining mathematically perfect relative depth perception to maintain the Teacher's expert advantage.
+1. **Removed Global Position:** `drone_pos[0]` (X) and `drone_pos[1]` (Y) were entirely deleted from the observation array. Only `z_altitude` was retained as it is critical for ground collision avoidance.
+2. **LiDAR Resolution (The Goldilocks Zone):** Increased LiDAR rays from 16 to 36 (10-degree intervals). This closes blind spots without causing the Curse of Dimensionality. The final Observation Space expanded to a lightweight `49-D` array, which is trivially processed by the `[256, 256]` MLP while ensuring 100% ego-centric alignment with the future Student CNN.
+
+**Code Changes:**
+```python
+# CHANGED in drone_sim.py: Removed Global XY
+# OLD: obs = np.concatenate([drone_pos, euler, ...
+z_altitude = np.array([drone_pos[2]], dtype=np.float32)
+obs = np.concatenate([z_altitude, euler, local_vel, local_ang_vel, local_relative_pos, lidar_data])
+
+# CHANGED in drone_sim.py: LiDAR Resolution
+# OLD: self.num_rays = 16 (31-D State Space)
+# NEW: self.num_rays = 36 (49-D State Space)
+self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(49,), dtype=np.float32)
+```
+
