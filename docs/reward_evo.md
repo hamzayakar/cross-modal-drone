@@ -431,3 +431,36 @@ env = VecNormalize(env, norm_obs=True, norm_reward=True, clip_obs=10.)
 # norm_reward must be False during eval, otherwise the +1600 threshold is unreachable.
 eval_env = VecNormalize(eval_env, norm_obs=True, norm_reward=False, training=False)
 ```
+
+## Stage 0.13: The Three Hidden Monsters (Frame Conflicts, Gamma Mismatch, and State Desync)
+
+**Behavior:** Even with a perfect observation space, the training pipeline contained three deep-rooted structural flaws spanning physics, RL mathematics, and software engineering. If left unchecked, these would have caused the model to plateau indefinitely.
+
+**Monster 1 (Physics): Blind PD Controller.**
+The low-level PD controller was receiving the drone's angular velocity (`ang_vel`) in the Global World Frame. When the drone rotated 90 degrees (Yaw), the World's Y-axis no longer aligned with the drone's Pitch axis. The PD controller attempted to stabilize Pitch but inadvertently applied torque to the Roll axis, inducing an unrecoverable death-spin.
+*Fix:* The global `ang_vel` was multiplied by the transposed rotation matrix to convert it into `local_ang_vel` (Body Frame) before feeding it into the PD damping calculations.
+
+**Monster 2 (RL Math): The Gamma Horizon Mismatch.**
+To solve 240Hz myopia, the PPO agent's discount factor was set to $\gamma = 0.9995$. However, the underlying `VecNormalize` wrapper uses its own gamma to compute discounted returns for reward normalization. Its default was $0.99$. The wrapper was squashing the rewards based on a 1-second horizon, confusing the PPO agent targeting a 5-second horizon.
+*Fix:* Explicitly passed `gamma=0.9995` to all `VecNormalize` instances to synchronize the time horizons.
+
+**Monster 3 (Software Eng): Evaluation Environment Desync.**
+The `eval_env` was initialized with `training=False`, meaning its normalization statistics (Mean, Variance) remained frozen at zero. When the `EvalCallback` tested the model, the model was fed incorrectly scaled raw data, causing it to fail every evaluation and never save a `best_model.zip`.
+*Fix:* Engineered a custom `SyncEvalEnvCallback` that explicitly copies the running `obs_rms` from the training environment to the evaluation environment at every step.
+
+## Stage 0.14: The Final Boss — Symmetry Breaking (Preventing Muscle-Memory Overfitting)
+
+**Behavior:** With all systems finally synchronized, a theoretical vulnerability remained regarding the Deep Learning policy's generalization capability. The drone spawned at the exact same coordinate (`[0, 0, 2.0]`) facing exact North (`Yaw=0`) at the start of every single episode. In Reinforcement Learning, deterministic initialization allows the MLP to bypass sensor data completely and memorize a rigid "open-loop" sequence of actions (Muscle Memory) to reach the first target. When transitioned to the Cross-Modal Student CNN phase, any slight wind or initialization noise would cause catastrophic failure.
+
+**Fix:** Implemented **Symmetry Breaking** in the environment's `reset()` function. The drone is now spawned with a randomized X/Y offset ($\pm 0.5$ meters) and a completely randomized starting Yaw angle ($-\pi$ to $+\pi$). This strict Domain Randomization forcefully prevents trajectory memorization. The agent has no choice but to actively process its Ego-Centric 50-D sensor arrays (LiDAR and Compass) from step zero to survive, guaranteeing true "closed-loop" zero-shot generalization.
+
+**Code Changes:**
+```python
+# CHANGED in drone_sim.py reset(): Added Symmetry Breaking
+start_x = self.np_random.uniform(-0.5, 0.5)
+start_y = self.np_random.uniform(-0.5, 0.5)
+start_yaw = self.np_random.uniform(-math.pi, math.pi)
+start_pos = [start_x, start_y, 2.0]
+start_ori = p.getQuaternionFromEuler([0, 0, start_yaw])
+self.drone_id = p.loadURDF(urdf_path, start_pos, baseOrientation=start_ori, globalScaling=4.0)
+```
