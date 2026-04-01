@@ -45,7 +45,7 @@ stages:
 rewards:
   alive_bonus: 0.02
   distance_penalty_multiplier: 0.02
-  velocity_penalty_multiplier: 0.01
+  velocity_penalty_multiplier: 0.003
   effort_penalty_multiplier: 0.001
   lidar_penalty_multiplier: 0.5
   coin_collection_reward: 300.0

@@ -15,10 +15,11 @@ class RoomDroneEnv(gym.Env):
         self.client = p.connect(p.GUI if gui else p.DIRECT)
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
         
-        # Action space: 4 rotors, continuous values [-1.0, 1.0]
+        # CHANGED: Action space remains 4D, but represents [Pitch, Roll, Yaw_Rate, Target_Thrust]
+        # Range [-1, 1] will be mapped to physical angles and forces in the step() function.
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(4,), dtype=np.float32)
-        # Observation space: 32-D (Kinematics + Lidar)
-        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(32,), dtype=np.float32)
+        
+        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(31,), dtype=np.float32)
         
         self.room_bounds = [8.0, 8.0, 4.0]
         self.max_steps = 14400 
@@ -66,14 +67,12 @@ class RoomDroneEnv(gym.Env):
         if self.num_obstacles == 0:
             return
             
-        # Pin the random seed for reproducibility (Stage 2 & 3) if not fully randomized
         rng = np.random.default_rng(seed=42) if not self.randomize_obstacles else np.random.default_rng()
             
         for _ in range(self.num_obstacles):
             ox = rng.uniform(-7.0, 7.0)
             oy = rng.uniform(-7.0, 7.0)
             
-            # Keep a clear spawn zone for the drone
             if math.sqrt(ox**2 + oy**2) < 1.0:
                 continue
                 
@@ -99,14 +98,12 @@ class RoomDroneEnv(gym.Env):
     def _spawn_coins_safely(self):
         self.gold_data = []
         
-        # CURRICULUM STAGE 0: The "Force-Feeding" Trick
-        # If coins are fixed, spawn one extremely close to teach the reward association.
         if not self.randomize_coins:
             fixed_positions = [
-                [1.0, 0.0, 2.0],  # Right in front of the drone's nose!
-                [0.0, 1.5, 2.0],  # Slightly to the side
-                [4.0, 4.0, 2.0],  # Far corner
-                [-4.0, -4.0, 2.0] # Far corner
+                [1.0, 0.0, 2.0],
+                [0.0, 1.5, 2.0],
+                [4.0, 4.0, 2.0],
+                [-4.0, -4.0, 2.0]
             ]
             for pos in fixed_positions:
                 vs = p.createVisualShape(p.GEOM_SPHERE, radius=0.12, rgbaColor=[1, 0.84, 0, 1])
@@ -114,7 +111,6 @@ class RoomDroneEnv(gym.Env):
                 self.gold_data.append({"id": gid, "pos": pos})
             return
 
-        # STAGE 1+: Randomize coin positions safely
         num_coins = np.random.randint(10, 18)
         attempts = 0
         
@@ -122,7 +118,6 @@ class RoomDroneEnv(gym.Env):
             attempts += 1
             pos = [np.random.uniform(-7.0, 7.0), np.random.uniform(-7.0, 7.0), np.random.uniform(0.5, 6.0)]
             
-            # Prevent spawning inside the drone's starting area
             if math.sqrt(pos[0]**2 + pos[1]**2 + (pos[2]-0.5)**2) < 1.0:
                 continue 
                 
@@ -151,7 +146,6 @@ class RoomDroneEnv(gym.Env):
         self._spawn_obstacles()
         
         urdf_path = os.path.join(os.path.dirname(__file__), "cf2x.urdf")
-        # Drone starts at Z=2.0 meters (mid-air) to prevent immediate ground collisions
         self.drone_id = p.loadURDF(urdf_path, [0, 0, 2.0], globalScaling=4.0)
         p.changeDynamics(self.drone_id, -1, mass=1.0)
                                           
@@ -183,7 +177,6 @@ class RoomDroneEnv(gym.Env):
         drone_pos, ori = p.getBasePositionAndOrientation(self.drone_id)
         linear_vel, angular_vel = p.getBaseVelocity(self.drone_id)
         
-        # Calculate relative vector to the closest coin
         if len(self.gold_data) > 0:
             distances = [math.sqrt(sum((d - val)**2 for d, val in zip(drone_pos, g["pos"]))) for g in self.gold_data]
             closest_idx = np.argmin(distances)
@@ -193,39 +186,78 @@ class RoomDroneEnv(gym.Env):
             relative_pos = [0, 0, 0]
             
         lidar_data = self._compute_lidar(drone_pos)
-            
-        obs = np.concatenate([drone_pos, ori, linear_vel, angular_vel, relative_pos, lidar_data]).astype(np.float32)
+        
+        euler = p.getEulerFromQuaternion(ori)
+        obs = np.concatenate([drone_pos, euler, linear_vel, angular_vel, relative_pos, lidar_data]).astype(np.float32)
         return obs
 
     def step(self, action):
         self.current_step += 1
         
-        # --- HOVER BIAS & ACTION MAPPING ---
-        # A 1kg drone needs 9.81N to hover (2.4525N per motor)
-        hover_force = 9.81 / 4.0 
+        # ==============================================================
+        # NEW HIGH-LEVEL PD CONTROLLER (ATTITUDE CONTROL MODE)
+        # ==============================================================
         
-        # Agent outputs [-1.0, 1.0]. 0.0 maps directly to perfect hover.
-        # Agent can add or subtract up to 5.0N from the baseline.
-        raw_forces = hover_force + (action * 5.0)
+        # 1. Map RL Agent Actions [-1, 1] to Physical Target Values
+        target_pitch = action[0] * (math.pi / 6)  # Max +/- 30 degrees forward/back
+        target_roll = action[1] * (math.pi / 6)   # Max +/- 30 degrees left/right
+        target_yaw_rate = action[2] * 2.0         # Max +/- 2.0 rad/s rotation
+        target_thrust = ((action[3] + 1.0) / 2.0) * 20.0  # Mapped to 0.0 N - 20.0 N total upward thrust
         
-        # CRITICAL FIX: Prevent negative thrust. Motors can only push up [0.0, 10.0].
-        forces = np.clip(raw_forces, 0.0, 10.0) 
+        # 2. Read Current Physical State
+        _, ori = p.getBasePositionAndOrientation(self.drone_id)
+        euler = p.getEulerFromQuaternion(ori)
+        _, ang_vel = p.getBaseVelocity(self.drone_id)
         
+        current_roll, current_pitch, current_yaw = euler
+        current_yaw_rate = ang_vel[2]
+        
+        # 3. PD Controller Gains (Tuned for 1kg Drone Stability)
+        Kp_ang = 8.0  # Proportional gain for correcting tilt
+        Kd_ang = 4.0  # Derivative gain for preventing oscillation/breakdancing
+        Kp_yaw = 3.0  # Proportional gain for yaw
+        
+        # 4. Calculate Errors
+        pitch_error = target_pitch - current_pitch
+        roll_error = target_roll - current_roll
+        yaw_rate_error = target_yaw_rate - current_yaw_rate
+        
+        # 5. Compute Required Torques to fix the errors
+        tau_pitch = (Kp_ang * pitch_error) - (Kd_ang * ang_vel[1])
+        tau_roll = (Kp_ang * roll_error) - (Kd_ang * ang_vel[0])
+        tau_yaw = Kp_yaw * yaw_rate_error
+        
+        # 6. Motor Mixer (X-Configuration Math)
+        base_f = target_thrust / 4.0
+        
+        # Mapping Torques to the 4 Motors
+        f0 = base_f - tau_pitch + tau_roll - tau_yaw  # Front-Left
+        f1 = base_f + tau_pitch + tau_roll + tau_yaw  # Back-Left
+        f2 = base_f + tau_pitch - tau_roll - tau_yaw  # Back-Right
+        f3 = base_f - tau_pitch - tau_roll + tau_yaw  # Front-Right
+        
+        # Clip individual motor limits to realistic values (0 N to 7.5 N per motor)
+        forces = np.clip([f0, f1, f2, f3], 0.0, 7.5)
+        
+        # ==============================================================
+        # END OF PD CONTROLLER
+        # ==============================================================
+
         rotor_offsets = [[0.12, 0.12, 0], [-0.12, 0.12, 0], [-0.12, -0.12, 0], [0.12, -0.12, 0]]
         
-        # --- CRITICAL FIX: ACTION REPEAT REMOVED (Back to 240Hz) ---
-        # Direct rotor control requires extremely high frequency. 
-        # Holding actions for 4 frames caused unrecoverable aerodynamic flips.
         for i in range(4):
             p.applyExternalForce(self.drone_id, -1, forceObj=[0, 0, forces[i]], posObj=rotor_offsets[i], flags=p.LINK_FRAME)
-            
+
+        # Apply differential yaw torque directly to base link
+        torque_mag = ((forces[0] + forces[2]) - (forces[1] + forces[3])) * 0.01
+        p.applyExternalTorque(self.drone_id, -1, [0, 0, torque_mag], flags=p.LINK_FRAME)
+
         p.stepSimulation()
 
-        # --- HOVERCRAFT MODE (Programmatic Z-Lock) ---
+        # Z-Lock (Hovercraft Mode) remains exactly the same for Stage 0
         if self.lock_z:
             pos, ori = p.getBasePositionAndOrientation(self.drone_id)
             lin_vel, ang_vel = p.getBaseVelocity(self.drone_id)
-            # Reset position to exactly Z=2.0 and kill vertical velocity
             p.resetBasePositionAndOrientation(self.drone_id, [pos[0], pos[1], 2.0], ori)
             p.resetBaseVelocity(self.drone_id, [lin_vel[0], lin_vel[1], 0.0], ang_vel)
         
@@ -240,19 +272,16 @@ class RoomDroneEnv(gym.Env):
         coin_collected = False 
         current_distance = 0.0
         
-        # Check coin collection
         if len(self.gold_data) > 0:
             distances = [math.sqrt(sum((d - val)**2 for d, val in zip(drone_pos, g["pos"]))) for g in self.gold_data]
             closest_idx = np.argmin(distances)
             current_distance = distances[closest_idx]
             
-            # 40cm collection radius
             if current_distance < 0.4: 
                 p.removeBody(self.gold_data[closest_idx]["id"])
                 self.gold_data.pop(closest_idx)
                 coin_collected = True 
                 
-        # Room Cleared
         if len(self.gold_data) == 0:
             is_success = True
             terminated = True
@@ -260,14 +289,13 @@ class RoomDroneEnv(gym.Env):
             
         hx, hy, hz = self.room_bounds
 
-        # 75 Degree Tilt Rule (1.3 radians) -> Fatal Crash
+        # If it somehow breaches the PD limits and flips, it dies
         euler = p.getEulerFromQuaternion(ori)
         if abs(euler[0]) > 1.3 or abs(euler[1]) > 1.3:
             is_collision = True
             terminated = True
             info['is_success'] = False
 
-        # Room Boundaries Constraints (Walls, Floor, Ceiling)
         if (abs(drone_pos[0]) > hx - 0.2 or 
             abs(drone_pos[1]) > hy - 0.2 or 
             drone_pos[2] < 0.3 or 
@@ -276,16 +304,14 @@ class RoomDroneEnv(gym.Env):
             terminated = True
             info['is_success'] = False
             
-        # Obstacle Collisions
-        for obs_id in self.obstacle_ids:
-            contact_points = p.getContactPoints(bodyA=self.drone_id, bodyB=obs_id)
+        for entity_id in self.obstacle_ids + self.wall_ids:
+            contact_points = p.getContactPoints(bodyA=self.drone_id, bodyB=entity_id)
             if len(contact_points) > 0:
                 is_collision = True
                 terminated = True
                 info['is_success'] = False
                 break
             
-        # Timeout
         if self.current_step >= self.max_steps:
             truncated = True
             
@@ -293,7 +319,6 @@ class RoomDroneEnv(gym.Env):
         lidar_data = obs[-16:]
         info['is_success'] = is_success
 
-        # Compute highly tuned dense reward from the YAML parameters
         reward = compute_dense_reward(
             drone_pos, drone_vel, action, current_distance, 
             is_collision, is_success, lidar_data, coin_collected, 

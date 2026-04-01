@@ -175,3 +175,96 @@ if self.lock_z:
     p.resetBasePositionAndOrientation(self.drone_id, [pos[0], pos[1], 2.0], ori)
     p.resetBaseVelocity(self.drone_id, [lin_vel[0], lin_vel[1], 0.0], ang_vel)
 ```
+
+## Stage 0.3: Wall-Hugging & Physics Exploitation (The "Hovercraft" Loophole)
+**Behavior:** The implementation of Hovercraft Mode (Z-Lock) successfully stopped the vertical Kamikaze behavior. However, the agent quickly found a new local optima: "Physics Exploitation." It realized that maintaining aerodynamic balance in free space requires high entropy and continuous micro-corrections, but sliding against a wall provides infinite physical stability. It flew straight to the room's boundary and leaned its rigid body against the wall, perfectly stabilizing its X/Y axes and farming the alive bonus without triggering the 75-degree tilt penalty. Because PyBullet lacks a "propeller destruction" mechanic, the agent treated the wall as a safety rail.
+**Fix:** We bridged the "Sim2Real" gap by treating the mathematical room boundaries as highly lethal physical obstacles. We appended the generated `wall_ids` to the physical collision detection loop. Now, even a millimeter of contact with a wall results in immediate termination and a severe `-300` collision penalty. This strict constraint forcefully evicts the agent from its "contact-rich" comfort zone, compelling it to learn true "free-flight" stabilization in the center of the room.
+
+**Code Changes:**
+```python
+# CHANGED in drone_sim.py step(): Added wall collision detection
+# OLD:
+# for obs_id in self.obstacle_ids:
+#     contact_points = p.getContactPoints(bodyA=self.drone_id, bodyB=obs_id)
+
+# NEW: Bridging Sim2Real by electrifying the walls
+for entity_id in self.obstacle_ids + self.wall_ids:
+    contact_points = p.getContactPoints(bodyA=self.drone_id, bodyB=entity_id)
+    if len(contact_points) > 0:
+        is_collision = True
+        terminated = True
+        info['is_success'] = False
+        break
+```
+
+## Stage 0.4: Observation Space & Physics Fix (Quaternion → Euler + Yaw Torque)
+
+**Behavior:** Despite Hovercraft Mode (Z-Lock) preventing vertical crashes, the agent continued 
+to exhibit uncontrolled spinning and failed to learn stable directional flight. 
+Two root-cause bugs were identified in the environment itself, independent of reward shaping.
+
+**Bug 1 — Quaternion Observation:**
+The orientation was passed to the agent as a raw quaternion (4 values: x, y, z, w). 
+Quaternion space is non-linear and discontinuous — a network cannot learn that 
+[0,0,0,1] and [0,0,1,0] represent a 90-degree rotation difference. 
+The agent received mathematically uninterpretable orientation data.
+
+**Bug 2 — Missing Yaw Torque:**
+All 4 motors applied only upward force `[0, 0, F]` with no counter-rotating torque. 
+In a real quadcopter, motors 0 & 2 spin clockwise and motors 1 & 3 spin counter-clockwise, 
+canceling yaw torque. Without this, the drone freely spins around the Z-axis 
+and the agent wastes its entire policy capacity trying to fight an uncontrollable rotation.
+
+**Fix:**
+1. **Euler Angles:** Replaced quaternion with Euler angles (roll, pitch, yaw) in the 
+   observation vector. Observation space reduced from 32-D to 31-D.
+2. **Yaw Torque:** Added differential torque based on motor force imbalance:
+   `torque = ((F0 + F2) - (F1 + F3)) * 0.01`
+   This gives the agent a physically realistic mechanism to control yaw.
+
+**Code Changes:**
+```python
+# CHANGED: observation_space shape 32 -> 31
+self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(31,), dtype=np.float32)
+
+# CHANGED: _get_obs() quaternion -> euler
+euler = p.getEulerFromQuaternion(ori)
+obs = np.concatenate([drone_pos, euler, linear_vel, angular_vel, relative_pos, lidar_data])
+
+# ADDED: step() yaw torque after force application
+torque_mag = ((forces[0] + forces[2]) - (forces[1] + forces[3])) * 0.01
+p.applyExternalTorque(self.drone_id, -1, [0, 0, torque_mag], flags=p.LINK_FRAME)
+```
+
+## Stage 0.5: The Hierarchical Paradigm Shift (Abandoning Raw Thrust)
+
+**Behavior:** Despite all environmental constraints, bug fixes, and reward shaping, the agent's entropy consistently collapsed from -6 to -1 around the 2 Million step mark. Episode lengths rarely exceeded 300-400 steps (approx. 1.5 seconds at the 240Hz simulation rate). 
+The root cause was cognitive overload: the agent was tasked with simultaneously learning non-linear aerodynamics, rigid body stabilization, high-frequency motor mixing, and 3D spatial navigation. Because learning basic flight physics from scratch via random exploration is nearly impossible, the agent resorted to immediate termination (crashing) to minimize ongoing penalties.
+
+**Fix:** Implemented **Hierarchical Control**, moving away from the "End-to-End" approach of directly controlling the 4 motor thrusts.
+1. **High-Level (PPO Agent):** The agent's 4D action space no longer outputs raw motor forces. Instead, it is mapped to intuitive flight commands: `[Target Pitch, Target Roll, Target Yaw Rate, Target Thrust]`.
+2. **Low-Level (PD Controller):** A custom Proportional-Derivative (PD) controller was integrated directly into the environment's `step()` function. It reads the agent's target attitude, calculates the current error, generates the necessary correcting torques, and performs X-configuration motor mixing.
+
+This architectural shift abstracts away the high-frequency physical stabilization, allowing the RL agent to focus 100% of its policy capacity on its actual goal: obstacle avoidance and optimal pathfinding.
+
+**Code Changes:**
+```python
+# CHANGED in drone_sim.py: Action Space Mapping
+# OLD: actions directly mapped to individual motor forces [F0, F1, F2, F3]
+# NEW: actions map to high-level attitude targets
+target_pitch = action[0] * (math.pi / 6)
+target_roll = action[1] * (math.pi / 6)
+target_yaw_rate = action[2] * 2.0
+target_thrust = ((action[3] + 1.0) / 2.0) * 20.0
+
+# ADDED in drone_sim.py: Low-Level PD Controller & Motor Mixer
+tau_pitch = (Kp_ang * pitch_error) - (Kd_ang * ang_vel[1])
+tau_roll = (Kp_ang * roll_error) - (Kd_ang * ang_vel[0])
+tau_yaw = Kp_yaw * yaw_rate_error
+
+# X-Configuration Motor Mixing
+f0 = base_f - tau_pitch + tau_roll - tau_yaw
+f1 = base_f + tau_pitch + tau_roll + tau_yaw
+f2 = base_f + tau_pitch - tau_roll - tau_yaw
+f3 = base_f - tau_pitch - tau_roll + tau_yaw
+```
