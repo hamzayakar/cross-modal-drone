@@ -1,9 +1,9 @@
 import numpy as np
 
-def compute_dense_reward(drone_pos, drone_vel, action, current_distance, is_collision, is_success, lidar_data, coin_collected, reward_weights=None):
+def compute_dense_reward(drone_pos, drone_vel, action, current_distance, is_collision, is_success, lidar_data, coin_collected, action_diff, reward_weights=None):
     """
     Hunter Model (Reward Shaping for Goal-Oriented Behavior)
-    Dinamik olarak YAML config dosyasından beslenir.
+    Dynamic reward weights based on YAML config.
     """
     # Default reward weights if not provided
     if reward_weights is None:
@@ -11,7 +11,7 @@ def compute_dense_reward(drone_pos, drone_vel, action, current_distance, is_coll
             'alive_bonus': 0.02,
             'distance_penalty_multiplier': 0.001,
             'velocity_penalty_multiplier': 0.001,
-            'effort_penalty_multiplier': 0.001,
+            'smoothness_penalty_multiplier': 0.05,
             'lidar_penalty_multiplier': 0.5,
             'coin_collection_reward': 300.0,
             'success_bonus': 1000.0,
@@ -26,12 +26,12 @@ def compute_dense_reward(drone_pos, drone_vel, action, current_distance, is_coll
     # 2. Smart Distance Penalty
     reward -= reward_weights['distance_penalty_multiplier'] * current_distance
     
-    # 3. Stability Penalties (Velocity and Control Effort)
+    # 3. Stability Penalties (Velocity and Smoothness)
     velocity_magnitude = np.linalg.norm(drone_vel)
     reward -= reward_weights['velocity_penalty_multiplier'] * velocity_magnitude
     
-    effort = np.sum(np.square(action))
-    reward -= reward_weights['effort_penalty_multiplier'] * effort
+    # Agent gets penalized for large action changes to encourage smoother trajectories, not just for high velocities. This promotes more natural and efficient flight patterns.
+    reward -= reward_weights.get('smoothness_penalty_multiplier', 0.05) * action_diff
     
     # 4. Proximity Penalty (LiDAR-based Obstacle Avoidance)
     min_lidar = np.min(lidar_data)

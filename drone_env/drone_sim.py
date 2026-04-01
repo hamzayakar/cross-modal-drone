@@ -35,6 +35,9 @@ class RoomDroneEnv(gym.Env):
         
         self.num_rays = 16
         self.lidar_range = 5.0 
+        
+        # Holds the previous action for jerk penalty calculation
+        self.prev_action = np.zeros(4, dtype=np.float32)
 
     def _build_closed_room(self):
         wall_half_thickness = 0.1
@@ -137,6 +140,7 @@ class RoomDroneEnv(gym.Env):
         p.resetSimulation(self.client)
         p.setGravity(0, 0, -9.81)
         self.current_step = 0
+        self.prev_action = np.zeros(4, dtype=np.float32)
         
         self.plane_id = p.loadURDF("plane.urdf")
         self._build_closed_room()
@@ -151,17 +155,13 @@ class RoomDroneEnv(gym.Env):
         return self._get_obs(), {}
 
     def _compute_lidar(self, drone_pos, rot_matrix):
-        # rot_matrix: Dronun o anki dönüş matrisi (3x3)
         ray_starts = []
         ray_ends = []
         offset = 0.25 
         
         for i in range(self.num_rays):
             angle = (2 * math.pi * i) / self.num_rays
-            # Create ray in local drone frame (XY plane)
             local_ray = np.array([math.cos(angle), math.sin(angle), 0])
-            
-            # Convert local ray to global frame using drone's rotation matrix
             global_ray = rot_matrix.dot(local_ray)
             
             start = [drone_pos[0] + global_ray[0]*offset, drone_pos[1] + global_ray[1]*offset, drone_pos[2]]
@@ -177,15 +177,11 @@ class RoomDroneEnv(gym.Env):
     def _get_obs(self):
         drone_pos, ori = p.getBasePositionAndOrientation(self.drone_id)
         linear_vel, angular_vel = p.getBaseVelocity(self.drone_id)
-        
-        # Get rotation matrix from drone's orientation quaternion
         rot_matrix = np.array(p.getMatrixFromQuaternion(ori)).reshape(3, 3)
         
-        # 1. Convert linear and angular velocities to Body Frame 
         local_vel = rot_matrix.T.dot(linear_vel)
         local_ang_vel = rot_matrix.T.dot(angular_vel)
         
-        # 2. Convert global positions of coins to local positions relative to the drone
         if len(self.gold_data) > 0:
             distances = [math.sqrt(sum((d - val)**2 for d, val in zip(drone_pos, g["pos"]))) for g in self.gold_data]
             closest_idx = np.argmin(distances)
@@ -196,16 +192,23 @@ class RoomDroneEnv(gym.Env):
         else:
             local_relative_pos = np.array([0, 0, 0])
             
-        # 3. Send Lidar 
         lidar_data = self._compute_lidar(drone_pos, rot_matrix)
         euler = p.getEulerFromQuaternion(ori)
             
-        # Ego-centric
         obs = np.concatenate([drone_pos, euler, local_vel, local_ang_vel, local_relative_pos, lidar_data]).astype(np.float32)
-        return obs
+        
+        # Minimal Sensor Noise (Distillation Robustness)
+        noise = np.random.normal(loc=0.0, scale=0.01, size=obs.shape)
+        obs_noisy = obs + noise
+        
+        return obs_noisy.astype(np.float32)
 
     def step(self, action):
         self.current_step += 1
+        
+        # Action Smoothness (Jerk) Calculation
+        action_diff = np.sum(np.square(action - self.prev_action))
+        self.prev_action = action.copy()
         
         # ==============================================================
         # PD CONTROLLER (ATTITUDE CONTROL MODE)
@@ -252,7 +255,7 @@ class RoomDroneEnv(gym.Env):
         torque_mag = ((forces[0] + forces[2]) - (forces[1] + forces[3])) * 0.01
         p.applyExternalTorque(self.drone_id, -1, [0, 0, torque_mag], flags=p.LINK_FRAME)
 
-        # --- ETH Zurich - Linear & Angular Damping ---
+        # Aerodynamic Damping (Linear & Angular Drag)
         drone_vel, angular_vel = p.getBaseVelocity(self.drone_id)
         drag_coeff_linear = -0.5  
         drag_coeff_angular = -0.05
@@ -262,8 +265,7 @@ class RoomDroneEnv(gym.Env):
         
         p.applyExternalForce(self.drone_id, -1, forceObj=drag_force, posObj=[0,0,0], flags=p.WORLD_FRAME)
         p.applyExternalTorque(self.drone_id, -1, torqueObj=drag_torque, flags=p.WORLD_FRAME)
-        # ------------------------------------------------------------------------
-
+        
         p.stepSimulation()
         
         drone_pos, ori = p.getBasePositionAndOrientation(self.drone_id)
@@ -326,6 +328,7 @@ class RoomDroneEnv(gym.Env):
         reward = compute_dense_reward(
             drone_pos, drone_vel, action, current_distance, 
             is_collision, is_success, lidar_data, coin_collected, 
+            action_diff, # Eklenen Action Diff
             reward_weights=self.reward_weights
         )
             
