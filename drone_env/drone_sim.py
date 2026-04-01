@@ -9,18 +9,18 @@ import os
 from .reward_functions import compute_dense_reward
 
 class RoomDroneEnv(gym.Env):
-    def __init__(self, gui=False, num_obstacles=0, randomize_obstacles=False, randomize_coins=False, lock_z=False, reward_weights=None):
+    def __init__(self, gui=False, num_obstacles=0, randomize_obstacles=False, randomize_coins=False, reward_weights=None):
         super().__init__()
         
         self.client = p.connect(p.GUI if gui else p.DIRECT)
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
         
-        # Action space: 4-D [Pitch, Roll, Yaw_Rate, Thrust]
+        # Action space: 4-D [Target Pitch, Target Roll, Target Yaw Rate, Target Thrust]
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(4,), dtype=np.float32)
         
-        # Observation space: 49-D Ego-Centric State
-        # 1 (Z-Altitude) + 3 (Euler) + 3 (Local Vel) + 3 (Local Ang Vel) + 3 (Local Relative Pos) + 36 (LiDAR) = 49D
-        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(49,), dtype=np.float32)
+        # Observation space: 50-D Ego-Centric State (Cross-Modal Distillation Ready)
+        # 1 (Z-Altitude) + 2 (Roll, Pitch) + 2 (Sin/Cos Yaw) + 3 (Local Vel) + 3 (Local Ang Vel) + 3 (Local Relative Pos) + 36 (LiDAR) = 50D
+        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(50,), dtype=np.float32)
         
         self.room_bounds = [8.0, 8.0, 4.0]
         self.max_steps = 14400 
@@ -28,7 +28,6 @@ class RoomDroneEnv(gym.Env):
         self.num_obstacles = num_obstacles
         self.randomize_obstacles = randomize_obstacles
         self.randomize_coins = randomize_coins
-        self.lock_z = lock_z
         self.reward_weights = reward_weights
         
         self.drone_id = None
@@ -37,11 +36,11 @@ class RoomDroneEnv(gym.Env):
         self.obstacle_positions = [] 
         self.gold_data = []
         
-        # 36 rays for 10-degree resolution (The Goldilocks Zone)
+        # 36 rays for 10-degree resolution (Prevents Modality Mismatch with CNN FOV)
         self.num_rays = 36
         self.lidar_range = 5.0 
         
-        # Holds the previous action for smoothness/jerk penalty calculation
+        # Holds the previous action to calculate the smoothness (jerk) penalty
         self.prev_action = np.zeros(4, dtype=np.float32)
 
     def _build_closed_room(self):
@@ -78,7 +77,7 @@ class RoomDroneEnv(gym.Env):
             ox = rng.uniform(-7.0, 7.0)
             oy = rng.uniform(-7.0, 7.0)
             
-            # Keep a clear spawn zone for the drone
+            # Keep a clear spawn zone for the drone to prevent instant collisions
             if math.sqrt(ox**2 + oy**2) < 1.0:
                 continue
                 
@@ -104,7 +103,7 @@ class RoomDroneEnv(gym.Env):
     def _spawn_coins_safely(self):
         self.gold_data = []
         
-        # If coins are fixed, spawn them in predetermined locations for Curriculum Stage 0 & 2
+        # Static Curriculum (Stage 0 & 2)
         if not self.randomize_coins:
             fixed_positions = [
                 [1.0, 0.0, 2.0],
@@ -118,7 +117,7 @@ class RoomDroneEnv(gym.Env):
                 self.gold_data.append({"id": gid, "pos": pos})
             return
 
-        # Randomize coin positions safely (Stage 1, 3, 4)
+        # Dynamic Curriculum (Stage 1, 3, 4)
         num_coins = np.random.randint(10, 18)
         attempts = 0
         
@@ -156,7 +155,7 @@ class RoomDroneEnv(gym.Env):
         self._spawn_obstacles()
         
         urdf_path = os.path.join(os.path.dirname(__file__), "cf2x.urdf")
-        # Drone starts at Z=2.0 meters (mid-air)
+        # Initialize at Z=2.0m to avoid ground-effect turbulence
         self.drone_id = p.loadURDF(urdf_path, [0, 0, 2.0], globalScaling=4.0)
         p.changeDynamics(self.drone_id, -1, mass=1.0)
                                           
@@ -171,10 +170,11 @@ class RoomDroneEnv(gym.Env):
         
         for i in range(self.num_rays):
             angle = (2 * math.pi * i) / self.num_rays
-            # Rays are defined in Body Frame
+            
+            # Define rays in the drone's local Body Frame
             local_ray = np.array([math.cos(angle), math.sin(angle), 0])
             
-            # Rotate rays to Global Frame for physics engine raycasting
+            # Rotate rays to the Global Frame (Ego-centric alignment)
             global_ray = rot_matrix.dot(local_ray)
             
             start = [drone_pos[0] + global_ray[0]*offset, drone_pos[1] + global_ray[1]*offset, drone_pos[2]]
@@ -190,13 +190,15 @@ class RoomDroneEnv(gym.Env):
     def _get_obs(self):
         drone_pos, ori = p.getBasePositionAndOrientation(self.drone_id)
         linear_vel, angular_vel = p.getBaseVelocity(self.drone_id)
+        
+        # Drone's rotation matrix for World -> Body frame transformation
         rot_matrix = np.array(p.getMatrixFromQuaternion(ori)).reshape(3, 3)
         
-        # 1. Body Frame Velocity Transformation
+        # 1. Body Frame Velocity
         local_vel = rot_matrix.T.dot(linear_vel)
         local_ang_vel = rot_matrix.T.dot(angular_vel)
         
-        # 2. Body Frame Relative Target Vector
+        # 2. Body Frame Relative Target Vector (Compass)
         if len(self.gold_data) > 0:
             distances = [math.sqrt(sum((d - val)**2 for d, val in zip(drone_pos, g["pos"]))) for g in self.gold_data]
             closest_idx = np.argmin(distances)
@@ -207,17 +209,34 @@ class RoomDroneEnv(gym.Env):
         else:
             local_relative_pos = np.array([0, 0, 0])
             
-        # 3. Dynamic Ego-centric LiDAR
+        # 3. Ego-centric LiDAR Raycasting
         lidar_data = self._compute_lidar(drone_pos, rot_matrix)
+        
+        # 4. Kinematics & Singularity Prevention
         euler = p.getEulerFromQuaternion(ori)
+        current_roll = euler[0]
+        current_pitch = euler[1]
+        current_yaw = euler[2]
+        
+        # Decompose Yaw into Sin/Cos to prevent the -PI to +PI wrap-around singularity
+        yaw_sin = math.sin(current_yaw)
+        yaw_cos = math.cos(current_yaw)
             
-        # CRITICAL SIM2REAL FIX: Remove Global X, Y coordinates. Keep only Z (Altitude).
+        # Altitude is the only absolute global coordinate retained
         z_altitude = np.array([drone_pos[2]], dtype=np.float32)
         
-        # Assemble 49-D Ego-Centric State
-        obs = np.concatenate([z_altitude, euler, local_vel, local_ang_vel, local_relative_pos, lidar_data]).astype(np.float32)
+        # Assemble 50-D State Space
+        obs = np.concatenate([
+            z_altitude, 
+            [current_roll, current_pitch], 
+            [yaw_sin, yaw_cos], 
+            local_vel, 
+            local_ang_vel, 
+            local_relative_pos, 
+            lidar_data
+        ]).astype(np.float32)
         
-        # Minimal Sensor Noise (Distillation Robustness)
+        # Inject minimal Gaussian noise for Distillation Robustness
         noise = np.random.normal(loc=0.0, scale=0.01, size=obs.shape)
         obs_noisy = obs + noise
         
@@ -226,7 +245,7 @@ class RoomDroneEnv(gym.Env):
     def step(self, action):
         self.current_step += 1
         
-        # Action Smoothness (Jerk) Calculation
+        # Calculate Action Smoothness (Jerk Penalty) to ensure clean CNN datasets
         action_diff = np.sum(np.square(action - self.prev_action))
         self.prev_action = action.copy()
         
@@ -259,6 +278,7 @@ class RoomDroneEnv(gym.Env):
         
         base_f = target_thrust / 4.0
         
+        # X-Configuration Motor Mixing
         f0 = base_f - tau_pitch + tau_roll - tau_yaw  
         f1 = base_f + tau_pitch + tau_roll + tau_yaw  
         f2 = base_f + tau_pitch - tau_roll - tau_yaw  
@@ -276,7 +296,7 @@ class RoomDroneEnv(gym.Env):
         torque_mag = ((forces[0] + forces[2]) - (forces[1] + forces[3])) * 0.01
         p.applyExternalTorque(self.drone_id, -1, [0, 0, torque_mag], flags=p.LINK_FRAME)
 
-        # Aerodynamic Damping (Linear & Angular Drag)
+        # Aerodynamic Damping (Linear & Angular Rotor Drag)
         drone_vel, angular_vel = p.getBaseVelocity(self.drone_id)
         drag_coeff_linear = -0.5  
         drag_coeff_angular = -0.05
@@ -288,13 +308,6 @@ class RoomDroneEnv(gym.Env):
         p.applyExternalTorque(self.drone_id, -1, torqueObj=drag_torque, flags=p.WORLD_FRAME)
         
         p.stepSimulation()
-
-        # --- HOVERCRAFT MODE (Programmatic Z-Lock) ---
-        if self.lock_z:
-            pos, ori = p.getBasePositionAndOrientation(self.drone_id)
-            lin_vel, ang_vel = p.getBaseVelocity(self.drone_id)
-            p.resetBasePositionAndOrientation(self.drone_id, [pos[0], pos[1], 2.0], ori)
-            p.resetBaseVelocity(self.drone_id, [lin_vel[0], lin_vel[1], 0.0], ang_vel)
         
         drone_pos, ori = p.getBasePositionAndOrientation(self.drone_id)
         drone_vel, _ = p.getBaseVelocity(self.drone_id)
@@ -325,6 +338,7 @@ class RoomDroneEnv(gym.Env):
         hx, hy, hz = self.room_bounds
 
         euler = p.getEulerFromQuaternion(ori)
+        # Fatal collision limits (approx 75 degrees)
         if abs(euler[0]) > 1.3 or abs(euler[1]) > 1.3:
             is_collision = True
             terminated = True
@@ -350,7 +364,7 @@ class RoomDroneEnv(gym.Env):
             truncated = True
             
         obs = self._get_obs()
-        lidar_data = obs[-36:] # Update indexing to fetch 36 rays
+        lidar_data = obs[-36:] 
         info['is_success'] = is_success
 
         reward = compute_dense_reward(

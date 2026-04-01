@@ -4,8 +4,8 @@ This repository contains a PyBullet-based 3D drone simulation designed to train 
 
 ## 🏗️ Project Architecture
 * `configs/`: YAML configuration files containing curriculum stages and reward shaping weights (`teacher_ppo.yaml`).
-* `drone_env/`: Custom Gymnasium environment integrated with PyBullet physics, including a mathematically accurate 32-D state space (16-D Kinematics + 16-D LiDAR raycasting).
-* `models/`: Saved weights (`.zip`) of the best performing PPO agents.
+* `drone_env/`: Custom Gymnasium environment integrated with PyBullet physics, including a mathematically accurate 50-D ego-centric state space (1-D Altitude + 2-D Roll/Pitch + 2-D Yaw Sin/Cos + 9-D Kinematics/Compass + 36-D LiDAR raycasting).
+* `models/`: Saved weights (`.zip`) and dynamic normalization stats (`.pkl`) of the best performing PPO agents.
 * `scripts/`: Training scripts and CLI tools.
 * `notebooks/`: Jupyter Notebooks for live-tracking the agent's progress and debugging.
 * `docs/`: Markdown documents logging the evolution of the reward function and "Reward Hacking" behaviors.
@@ -53,8 +53,9 @@ python scripts/train_teacher.py --stage 4
 tensorboard --logdir logs/
 ```
 
-To watch the agent's behavior live in the PyBullet GUI without interrupting the training process, run the Live Tracker Notebook:
-* `notebooks/04_watch_agent_live.ipynb`
+To watch the agent's behavior live in the PyBullet GUI without interrupting the training process, run the Live Tracker Notebooks:
+* `notebooks/04_watch_agent_best.ipynb`
+* `notebooks/05_watch_agent_live.ipynb`
 
 ## ⚖️ Custom Reward Shaping (Hunter Model)
 The environment features a dense reward function specifically tuned to prevent "Ceiling Hugging" and "Suicide Policies." It mathematically balances a tight `Alive Bonus` with a `Distance Penalty`, forcing the agent to move toward the target to yield a positive net reward, heavily incentivized by a massive `Coin Collection` spike. (See `docs/reward_evolution.md` for the full history).

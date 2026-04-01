@@ -406,3 +406,28 @@ obs = np.concatenate([z_altitude, euler, local_vel, local_ang_vel, local_relativ
 self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(49,), dtype=np.float32)
 ```
 
+## Stage 0.12: Neural Network Mathematics (Yaw Singularity & State Normalization)
+
+**Behavior:** Although the environment physics and distillation architecture were perfected, the deep learning model (PPO) was expected to struggle with slow convergence and periodic gradient explosions. This was traced back to two fundamental neural network data-formatting traps rather than physics bugs.
+
+**Fix 1 (The Yaw Wrap-Around Singularity):** The Yaw angle spanned from $-\pi$ to $+\pi$. A drone rotating past $180^\circ$ would experience a sudden mathematical discontinuity, jumping from $+3.14$ to $-3.14$. This $2\pi$ jump causes catastrophic gradient spikes. 
+*Solution:* Decoupled the Yaw scalar into a continuous trigonometric tuple `[sin(yaw), cos(yaw)]`, mapping the rotation to a smooth unit circle. The state space increased to `50-D`.
+
+**Fix 2 (The Curse of Unnormalized States):** The 50-D state vector contained values of vastly different scales (LiDAR: $0 \rightarrow 5$, Velocity: $-10 \rightarrow 10$, Noise: $0.01$). MLPs require inputs to follow a $\sim N(0,1)$ distribution to prevent large-magnitude inputs from dominating weight updates.
+*Solution:* Wrapped the environment in Stable-Baselines3's `VecNormalize` to dynamically track running means and variances, normalizing all observations on the fly. 
+
+**Code Changes:**
+```python
+# CHANGED in drone_sim.py: Yaw Singularity Fix
+yaw_sin = math.sin(current_yaw)
+yaw_cos = math.cos(current_yaw)
+obs = np.concatenate([z_altitude, [current_roll, current_pitch], [yaw_sin, yaw_cos], ...])
+
+# ADDED in train_teacher.py: Deep Learning Input Normalization
+env = DummyVecEnv([lambda: env])
+env = VecNormalize(env, norm_obs=True, norm_reward=True, clip_obs=10.)
+
+# FIX in train_teacher.py: Evaluation Environment Threshold Protection
+# norm_reward must be False during eval, otherwise the +1600 threshold is unreachable.
+eval_env = VecNormalize(eval_env, norm_obs=True, norm_reward=False, training=False)
+```
