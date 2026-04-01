@@ -18,7 +18,8 @@ class RoomDroneEnv(gym.Env):
         # Action space: 4-D [Target Pitch, Target Roll, Target Yaw Rate, Target Thrust]
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(4,), dtype=np.float32)
         
-        # Observation space: 50-D Ego-Centric State (Cross-Modal Distillation Ready)
+        # Observation space: 50-D Ego-Centric State
+        # 1 (Z-Altitude) + 2 (Roll, Pitch) + 2 (Sin/Cos Yaw) + 3 (Local Vel) + 3 (Local Ang Vel) + 3 (Local Relative Pos) + 36 (LiDAR) = 50D
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(50,), dtype=np.float32)
         
         self.room_bounds = [8.0, 8.0, 4.0]
@@ -35,12 +36,15 @@ class RoomDroneEnv(gym.Env):
         self.obstacle_positions = [] 
         self.gold_data = []
         
+        # 36 rays for 10-degree resolution
         self.num_rays = 36
         self.lidar_range = 5.0 
         
+        # Holds the previous action to calculate the smoothness (jerk) penalty
         self.prev_action = np.zeros(4, dtype=np.float32)
 
     def _build_closed_room(self):
+        """Builds the 16x16m room with glass walls."""
         wall_half_thickness = 0.1
         h_x, h_y, h_z = self.room_bounds
         
@@ -62,6 +66,7 @@ class RoomDroneEnv(gym.Env):
             self.wall_ids.append(w_id)
 
     def _spawn_obstacles(self):
+        """Spawns procedural obstacles (Stage 2-4)."""
         self.obstacle_ids = []
         self.obstacle_positions = []
         
@@ -74,6 +79,7 @@ class RoomDroneEnv(gym.Env):
             ox = rng.uniform(-7.0, 7.0)
             oy = rng.uniform(-7.0, 7.0)
             
+            # Keep a clear spawn zone for the drone
             if math.sqrt(ox**2 + oy**2) < 1.0:
                 continue
                 
@@ -97,9 +103,11 @@ class RoomDroneEnv(gym.Env):
             self.obstacle_positions.append({"pos": [ox, oy], "safe_radius": safe_radius})
 
     def _spawn_coins_safely(self):
+        """Spawns coins. Stage 0 uses fixed positions, others use random safe positions."""
         self.gold_data = []
         
         if not self.randomize_coins:
+            # FIX: First coin 1m ahead for curriculum force-feeding (Golden Ratio spawn)
             fixed_positions = [
                 [1.0, 0.0, 2.0],
                 [0.0, 1.5, 2.0],
@@ -117,9 +125,10 @@ class RoomDroneEnv(gym.Env):
         
         while len(self.gold_data) < num_coins and attempts < 200:
             attempts += 1
-            pos = [np.random.uniform(-7.0, 7.0), np.random.uniform(-7.0, 7.0), np.random.uniform(0.5, 6.0)]
+            # FIX: Z minimum raised to 1.0 to prevent coins spawning near the death zone (z < 0.3)
+            pos = [np.random.uniform(-7.0, 7.0), np.random.uniform(-7.0, 7.0), np.random.uniform(1.0, 6.0)]
             
-            if math.sqrt(pos[0]**2 + pos[1]**2 + (pos[2]-0.5)**2) < 1.0:
+            if math.sqrt(pos[0]**2 + pos[1]**2 + (pos[2]-1.0)**2) < 1.0:
                 continue 
                 
             hit_obstacle = False
@@ -140,6 +149,8 @@ class RoomDroneEnv(gym.Env):
         super().reset(seed=seed)
         p.resetSimulation(self.client)
         p.setGravity(0, 0, -9.81)
+        # FIX: Explicitly set timestep to avoid dependency on PyBullet version defaults
+        p.setTimeStep(1.0 / 240.0)
         self.current_step = 0
         self.prev_action = np.zeros(4, dtype=np.float32)
         
@@ -147,12 +158,15 @@ class RoomDroneEnv(gym.Env):
         self._build_closed_room()
         self._spawn_obstacles()
         
-        urdf_path = os.path.join(os.path.dirname(__file__), "cf2x.urdf")
+        # FIX: Symmetry Breaking — use self.np_random (seeded by Gymnasium) instead of
+        # np.random.default_rng() which would break deterministic seed management.
         start_x = self.np_random.uniform(-0.5, 0.5)
         start_y = self.np_random.uniform(-0.5, 0.5)
         start_yaw = self.np_random.uniform(-math.pi, math.pi)
         start_pos = [start_x, start_y, 2.0]
         start_ori = p.getQuaternionFromEuler([0, 0, start_yaw])
+        
+        urdf_path = os.path.join(os.path.dirname(__file__), "cf2x.urdf")
         self.drone_id = p.loadURDF(urdf_path, start_pos, baseOrientation=start_ori, globalScaling=4.0)
         p.changeDynamics(self.drone_id, -1, mass=1.0)
                                           
@@ -160,29 +174,38 @@ class RoomDroneEnv(gym.Env):
         
         return self._get_obs(), {}
 
-    def _compute_lidar(self, drone_pos, rot_matrix):
+    def _compute_lidar(self, drone_pos, ori):
+        """
+        Casts 36 rays in a Yaw-only stabilized horizontal plane.
+        
+        FIX: Previously used the full 3x3 rotation matrix, which caused projection
+        shrinkage when the drone pitched/rolled. Dropping global_ray[2] while keeping
+        XY components extracts a 2D projection of a 3D unit vector — so at 45deg pitch,
+        ray length shrank from 5.0m to 3.53m, distorting into an ellipse.
+        
+        Solution: Rotate rays only by Yaw. This gimbal-stabilized approach keeps the
+        LiDAR perfectly horizontal at all times, matching real-world 2D LiDAR behavior.
+        """
         ray_starts = []
         ray_ends = []
-        offset = 0.25 
-        
+        offset = 0.25
+
+        euler = p.getEulerFromQuaternion(ori)
+        yaw = euler[2]
+
         for i in range(self.num_rays):
-            angle = (2 * math.pi * i) / self.num_rays
-            
-            # Define rays in the drone's local Body Frame
-            local_ray = np.array([math.cos(angle), math.sin(angle), 0])
-            
-            # Rotate rays to the Global Frame (Ego-centric alignment)
-            global_ray = rot_matrix.dot(local_ray)
-            
-            start = [drone_pos[0] + global_ray[0]*offset, drone_pos[1] + global_ray[1]*offset, drone_pos[2]]
-            end = [start[0] + global_ray[0]*self.lidar_range, start[1] + global_ray[1]*self.lidar_range, start[2]]
-            
+            angle = (2 * math.pi * i) / self.num_rays + yaw
+            dx = math.cos(angle)
+            dy = math.sin(angle)
+
+            start = [drone_pos[0] + dx*offset, drone_pos[1] + dy*offset, drone_pos[2]]
+            end = [start[0] + dx*self.lidar_range, start[1] + dy*self.lidar_range, start[2]]
+
             ray_starts.append(start)
             ray_ends.append(end)
-            
+
         results = p.rayTestBatch(ray_starts, ray_ends)
-        lidar_readings = np.array([res[2] for res in results], dtype=np.float32)
-        return lidar_readings
+        return np.array([res[2] for res in results], dtype=np.float32)
 
     def _get_obs(self):
         drone_pos, ori = p.getBasePositionAndOrientation(self.drone_id)
@@ -200,66 +223,64 @@ class RoomDroneEnv(gym.Env):
             distances = [math.sqrt(sum((d - val)**2 for d, val in zip(drone_pos, g["pos"]))) for g in self.gold_data]
             closest_idx = np.argmin(distances)
             closest_pos = self.gold_data[closest_idx]["pos"]
-            
             global_relative_pos = np.array([g_val - d_val for g_val, d_val in zip(closest_pos, drone_pos)])
             local_relative_pos = rot_matrix.T.dot(global_relative_pos)
         else:
             local_relative_pos = np.array([0, 0, 0])
             
-        # 3. Ego-centric LiDAR Raycasting
-        lidar_data = self._compute_lidar(drone_pos, rot_matrix)
+        # 3. Yaw-stabilized LiDAR Raycasting
+        lidar_data = self._compute_lidar(drone_pos, ori)
         
-        # 4. Kinematics & Singularity Prevention
+        # 4. Orientation with Yaw Singularity Prevention (sin/cos decomposition)
         euler = p.getEulerFromQuaternion(ori)
         current_roll = euler[0]
         current_pitch = euler[1]
         current_yaw = euler[2]
-        
         yaw_sin = math.sin(current_yaw)
         yaw_cos = math.cos(current_yaw)
             
         z_altitude = np.array([drone_pos[2]], dtype=np.float32)
         
-        # Assemble 50-D State Space
+        # Assemble 50-D Ego-Centric State
         obs = np.concatenate([
-            z_altitude, 
-            [current_roll, current_pitch], 
-            [yaw_sin, yaw_cos], 
-            local_vel, 
-            local_ang_vel, 
-            local_relative_pos, 
-            lidar_data
+            z_altitude,                        # 1D
+            [current_roll, current_pitch],     # 2D
+            [yaw_sin, yaw_cos],                # 2D (continuous yaw)
+            local_vel,                         # 3D
+            local_ang_vel,                     # 3D
+            local_relative_pos,                # 3D
+            lidar_data                         # 36D
         ]).astype(np.float32)
         
+        # Inject minimal Gaussian noise for distillation robustness
         noise = np.random.normal(loc=0.0, scale=0.01, size=obs.shape)
-        obs_noisy = obs + noise
-        
-        return obs_noisy.astype(np.float32)
+        return (obs + noise).astype(np.float32)
 
     def step(self, action):
         self.current_step += 1
         
+        # Action Smoothness (Jerk) Penalty
         action_diff = np.sum(np.square(action - self.prev_action))
         self.prev_action = action.copy()
         
         # ==============================================================
-        # PD CONTROLLER (ATTITUDE CONTROL MODE) - FIXED BODY FRAME
+        # PD CONTROLLER (ATTITUDE CONTROL MODE) - BODY FRAME STABILIZED
         # ==============================================================
-        target_pitch = action[0] * (math.pi / 6)  
-        target_roll = action[1] * (math.pi / 6)   
-        target_yaw_rate = action[2] * 2.0         
-        target_thrust = ((action[3] + 1.0) / 2.0) * 20.0  
+        target_pitch = action[0] * (math.pi / 6)   # max ±30 degrees
+        target_roll = action[1] * (math.pi / 6)    # max ±30 degrees
+        target_yaw_rate = action[2] * 2.0           # max ±2 rad/s
+        target_thrust = ((action[3] + 1.0) / 2.0) * 20.0  # 0 to 20N total
         
         _, ori = p.getBasePositionAndOrientation(self.drone_id)
         euler = p.getEulerFromQuaternion(ori)
         _, ang_vel = p.getBaseVelocity(self.drone_id)
         
-        # CRITICAL FIX: Transform angular velocity to Local/Body Frame to prevent gimbal lock / roll-pitch swapping
+        # CRITICAL: Transform angular velocity to Body Frame to prevent axis-swapping during yaw
         rot_matrix = np.array(p.getMatrixFromQuaternion(ori)).reshape(3, 3)
         local_ang_vel = rot_matrix.T.dot(ang_vel)
         
         current_roll, current_pitch, current_yaw = euler
-        current_yaw_rate = local_ang_vel[2] # Yaw rate is now in the drone's Z axis, not the World's
+        current_yaw_rate = local_ang_vel[2]
         
         Kp_ang = 8.0  
         Kd_ang = 4.0  
@@ -269,7 +290,7 @@ class RoomDroneEnv(gym.Env):
         roll_error = target_roll - current_roll
         yaw_rate_error = target_yaw_rate - current_yaw_rate
         
-        # Apply damping based on Body Frame angular velocities, not Global
+        # Torques computed from Body Frame angular velocities (prevents gimbal lock)
         tau_pitch = (Kp_ang * pitch_error) - (Kd_ang * local_ang_vel[1])
         tau_roll = (Kp_ang * roll_error) - (Kd_ang * local_ang_vel[0])
         tau_yaw = Kp_yaw * yaw_rate_error
@@ -290,23 +311,21 @@ class RoomDroneEnv(gym.Env):
         for i in range(4):
             p.applyExternalForce(self.drone_id, -1, forceObj=[0, 0, forces[i]], posObj=rotor_offsets[i], flags=p.LINK_FRAME)
 
-        # Differential Yaw Torque
+        # Differential Yaw Torque (simulates motor counter-rotation)
         torque_mag = ((forces[0] + forces[2]) - (forces[1] + forces[3])) * 0.01
         p.applyExternalTorque(self.drone_id, -1, [0, 0, torque_mag], flags=p.LINK_FRAME)
 
-        # Aerodynamic Damping (Linear & Angular Rotor Drag)
-        drone_vel, angular_vel = p.getBaseVelocity(self.drone_id)
-        drag_coeff_linear = -0.5  
-        drag_coeff_angular = -0.05
-        
-        drag_force = [v * drag_coeff_linear for v in drone_vel]
-        drag_torque = [w * drag_coeff_angular for w in angular_vel]
+        # Aerodynamic Damping (Linear & Angular Rotor Drag — prevents ice-skating)
+        drone_vel_pre, angular_vel_pre = p.getBaseVelocity(self.drone_id)
+        drag_force = [v * -0.5 for v in drone_vel_pre]
+        drag_torque = [w * -0.05 for w in angular_vel_pre]
         
         p.applyExternalForce(self.drone_id, -1, forceObj=drag_force, posObj=[0,0,0], flags=p.WORLD_FRAME)
         p.applyExternalTorque(self.drone_id, -1, torqueObj=drag_torque, flags=p.WORLD_FRAME)
         
         p.stepSimulation()
         
+        # Re-fetch state AFTER physics step for accurate reward computation
         drone_pos, ori = p.getBasePositionAndOrientation(self.drone_id)
         drone_vel, _ = p.getBaseVelocity(self.drone_id)
         
@@ -331,37 +350,36 @@ class RoomDroneEnv(gym.Env):
         if len(self.gold_data) == 0:
             is_success = True
             terminated = True
-            info['is_success'] = True
             
         hx, hy, hz = self.room_bounds
-
         euler = p.getEulerFromQuaternion(ori)
+
+        # Tilt death check (unrecoverable flip)
         if abs(euler[0]) > 1.3 or abs(euler[1]) > 1.3:
             is_collision = True
             terminated = True
-            info['is_success'] = False
 
+        # Room boundary death check
         if (abs(drone_pos[0]) > hx - 0.2 or 
             abs(drone_pos[1]) > hy - 0.2 or 
             drone_pos[2] < 0.3 or 
             drone_pos[2] > hz * 2 - 0.2):
             is_collision = True
             terminated = True
-            info['is_success'] = False
             
+        # Obstacle and wall collision check
         for entity_id in self.obstacle_ids + self.wall_ids:
             contact_points = p.getContactPoints(bodyA=self.drone_id, bodyB=entity_id)
             if len(contact_points) > 0:
                 is_collision = True
                 terminated = True
-                info['is_success'] = False
                 break
             
         if self.current_step >= self.max_steps:
             truncated = True
             
         obs = self._get_obs()
-        lidar_data = obs[-36:] 
+        lidar_data = obs[-36:]
         info['is_success'] = is_success
 
         reward = compute_dense_reward(

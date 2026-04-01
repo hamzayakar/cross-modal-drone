@@ -2,15 +2,17 @@
 
 Before detailing the evolutionary stages of the agent's behavior, it is crucial to establish that the underlying physics engine, reward functions, and spatial geometry are mathematically sound and physically realistic. The training bottlenecks encountered were cognitive (agent capacity) rather than environmental.
 
-## 1. Thrust-to-Weight Ratio and Hover Bias
+## 1. Thrust-to-Weight Ratio and Hover Bias (Hierarchical PD Control)
 - **Drone Mass:** $1.0 \text{ kg}$
 - **Gravity:** $9.81 \text{ m/s}^2$
-- **Hover Force Required:** $2.4525 \text{ N}$ per motor.
+- **Hover Force Required:** $\approx 2.45 \text{ N}$ per motor (Total $9.81 \text{ N}$).
 
-The control space maps the agent's continuous output $[-1.0, 1.0]$ to motor thrust using the formula:
-$$F = 2.45 + (\text{action} \times 5.0)$$
+*(Note: The initial End-to-End architecture used a direct motor thrust mapping. With the shift to Hierarchical PD Control in Stage 0.5, this was updated to Target Attitude & Thrust.)*
 
-This means an output of $0.0$ perfectly counteracts gravity, creating a natural **Hover Bias**. Furthermore, the maximum possible thrust per motor is $7.45 \text{ N}$, resulting in a total upward force of $\approx 29.8 \text{ N}$. This gives the drone a **3:1 Thrust-to-Weight Ratio**, which perfectly mirrors the agile flight dynamics of real-world racing quadcopters. The forces are clamped between $[0.0, 10.0]$ to strictly prevent physically impossible negative thrust.
+The control space now maps the agent's continuous output `action[3]` (Throttle) from $[-1.0, 1.0]$ to a **Target Thrust** using the formula:
+$$\text{Target Thrust} = \frac{\text{action}[3] + 1.0}{2.0} \times 20.0$$
+
+This means a neutral output of $0.0$ yields exactly $10.0 \text{ N}$ of total thrust ($2.5 \text{ N}$ per motor), which perfectly counteracts gravity, creating a natural **Hover Bias**. The low-level PD controller then distributes this base thrust, clamped strictly at $7.5 \text{ N}$ per motor (Max $30 \text{ N}$ total), to execute the agent's target pitch, roll, and yaw commands. This provides a realistic **3:1 Thrust-to-Weight Ratio**, allowing agile recovery while strictly preventing physically impossible negative thrust.
 
 ## 2. The Curriculum Initialization Distance ("The Golden Ratio")
 In Stage 0, the first coin is spawned exactly $1.0 \text{ meter}$ in front of the drone. This is not an arbitrary number; it mathematically balances the reward economy to prevent the agent from bleeding points simply for existing.
@@ -464,3 +466,25 @@ start_pos = [start_x, start_y, 2.0]
 start_ori = p.getQuaternionFromEuler([0, 0, start_yaw])
 self.drone_id = p.loadURDF(urdf_path, start_pos, baseOrientation=start_ori, globalScaling=4.0)
 ```
+
+## Stage 0.15: The LiDAR Projection Shrinkage (Mathematical Frankenstein)
+
+**Behavior:** In Stage 0.9, the LiDAR was made ego-centric by multiplying the local ray vectors with the full 3x3 rotation matrix. However, because the environment utilizes a 2D LiDAR plane, the Z-component of the resulting 3D vector was discarded. Mathematically, dropping the Z-component of a pitched/rolled unit vector extracts its 2D projection. As the drone pitched forward (e.g., 45 degrees), the projection mathematically shrank ($\cos(45^\circ) \approx 0.707$). The 5.0-meter LiDAR functionally shrank to 3.53 meters, distorting into an ellipse and severely crippling the agent's spatial awareness.
+
+**Fix:** Implemented **Gimbal-Stabilized LiDAR**. Scrapped the full 3x3 rotation matrix for LiDAR rays. Instead, the local rays are now rotated **only by the Yaw angle**. This perfectly mimics real-world 2D LiDAR systems: it rotates with the drone's heading but remains strictly parallel to the ground, immune to projection shrinkage caused by Pitch or Roll.
+
+**Code Changes:**
+```python
+# CHANGED in drone_sim.py: Gimbal-Stabilized (Yaw-Only) LiDAR Rotation
+euler = p.getEulerFromQuaternion(ori)
+yaw = euler[2]
+
+for i in range(self.num_rays):
+    angle = (2 * math.pi * i) / self.num_rays + yaw
+    dx = math.cos(angle)
+    dy = math.sin(angle)
+    
+    start = [drone_pos[0] + dx*offset, drone_pos[1] + dy*offset, drone_pos[2]]
+    end = [start[0] + dx*self.lidar_range, start[1] + dy*self.lidar_range, start[2]]
+```
+

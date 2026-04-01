@@ -33,15 +33,18 @@ class SaveVecNormOnBestCallback(BaseCallback):
         self.vec_env.save(os.path.join(self.save_path, "best_model_vecnormalize.pkl"))
         return True
 
-# CRITICAL FIX 3: Synchronization between Train and Eval environments
 class SyncEvalEnvCallback(BaseCallback):
+    """
+    CRITICAL FIX 3: Synchronization between Train and Eval environments.
+    Copies running normalization statistics from training env to eval env at every step.
+    Without this, eval_env stays frozen at zero stats and the model never saves best_model.zip.
+    """
     def __init__(self, train_env: VecNormalize, eval_env: VecNormalize, verbose=0):
         super().__init__(verbose)
         self.train_env = train_env
         self.eval_env = eval_env
 
     def _on_step(self) -> bool:
-        # Copy running mean and variance from training environment to eval environment
         self.eval_env.obs_rms = self.train_env.obs_rms
         return True
 
@@ -77,16 +80,21 @@ if __name__ == "__main__":
     os.makedirs(stage_model_dir, exist_ok=True)
     
     # ========================================================================
-    # VECNORMALIZE INTEGRATION
+    # ENVIRONMENT SETUP
+    # FIX: Lambda closure — capture variable explicitly to prevent all lambdas
+    # referencing the same object if n_envs is ever increased.
     # ========================================================================
     env_raw = RoomDroneEnv(gui=False, num_obstacles=NUM_OBS, randomize_obstacles=RAND_OBS, randomize_coins=RAND_COINS, reward_weights=reward_weights)
     env_mon = Monitor(env_raw, log_dir)
-    env_vec = DummyVecEnv([lambda: env_mon])
+    env_vec = DummyVecEnv([lambda e=env_mon: e])
     
     eval_env_raw = RoomDroneEnv(gui=False, num_obstacles=NUM_OBS, randomize_obstacles=RAND_OBS, randomize_coins=RAND_COINS, reward_weights=reward_weights)
     eval_env_mon = Monitor(eval_env_raw)
-    eval_env_vec = DummyVecEnv([lambda: eval_env_mon])
+    eval_env_vec = DummyVecEnv([lambda e=eval_env_mon: e])
     
+    # ========================================================================
+    # VECNORMALIZE — CRITICAL FIX 2: Align gamma with PPO to prevent horizon mismatch
+    # ========================================================================
     prev_vecnorm_path = ""
     if args.stage > 0:
         prev_stage_key = f"stage_{args.stage - 1}"
@@ -98,19 +106,17 @@ if __name__ == "__main__":
         env = VecNormalize.load(prev_vecnorm_path, env_vec)
         env.training = True
         env.norm_reward = True
-        env.gamma = 0.9995  # CRITICAL FIX 2: Align VecNormalize horizon with PPO
+        env.gamma = 0.9995
         
         eval_env = VecNormalize.load(prev_vecnorm_path, eval_env_vec)
         eval_env.training = False
         eval_env.norm_reward = False
         eval_env.gamma = 0.9995
     else:
-        # Initial wrapping with Correct Gamma
         env = VecNormalize(env_vec, norm_obs=True, norm_reward=True, clip_obs=10., gamma=0.9995)
         eval_env = VecNormalize(eval_env_vec, norm_obs=True, norm_reward=False, clip_obs=10., gamma=0.9995, training=False)
     # ========================================================================
 
-    # Add the synchronization callback
     sync_callback = SyncEvalEnvCallback(train_env=env, eval_env=eval_env)
     
     callback_on_best = CallbackList([
@@ -118,20 +124,30 @@ if __name__ == "__main__":
         StopTrainingOnRewardThreshold(reward_threshold=1600.0, verbose=1)
     ])
     
-    eval_callback = EvalCallback(eval_env, 
-                                 best_model_save_path=stage_model_dir, 
-                                 log_path=log_dir, 
-                                 eval_freq=10000, 
-                                 deterministic=True, 
-                                 render=False,
-                                 callback_on_new_best=callback_on_best)
+    # FIX: n_eval_episodes raised from default 5 to 20 for reliable evaluation signal.
+    # 5 episodes is too noisy for stochastic coin collection tasks.
+    eval_callback = EvalCallback(
+        eval_env, 
+        best_model_save_path=stage_model_dir, 
+        log_path=log_dir, 
+        eval_freq=10000, 
+        n_eval_episodes=20,
+        deterministic=True, 
+        render=False,
+        callback_on_new_best=callback_on_best
+    )
                                  
     latest_model_path = os.path.join(stage_model_dir, "latest_model")
     save_latest_callback = SaveLatestCallback(save_path=latest_model_path, vec_env=env, save_freq=10000)
     
-    # Eval_callback requires up-to-date stats, so sync_callback runs alongside it
     callback_list = CallbackList([sync_callback, eval_callback, save_latest_callback])
     
+    # ========================================================================
+    # PPO HYPERPARAMETERS
+    # FIX: n_steps raised from default 2048 to 4096 for better advantage estimation
+    # at 240Hz. Longer rollouts = smoother gradient signal for high-frequency control.
+    # batch_size raised proportionally to maintain ~16 mini-batches per update.
+    # ========================================================================
     if args.stage > 0:
         prev_model_path = os.path.join(model_dir, prev_run_name, "best_model.zip")
         if os.path.exists(prev_model_path):
@@ -140,17 +156,33 @@ if __name__ == "__main__":
         else:
             print("WARNING: Previous model not found! Starting from scratch.")
             policy_kwargs = dict(net_arch=dict(pi=[256, 256], vf=[256, 256]))
-            model = PPO("MlpPolicy", env, verbose=1, tensorboard_log=log_dir, learning_rate=0.0003, batch_size=128, gamma=0.9995, policy_kwargs=policy_kwargs)
+            model = PPO(
+                "MlpPolicy", env, verbose=1, tensorboard_log=log_dir,
+                learning_rate=0.0003,
+                n_steps=4096,
+                batch_size=256,
+                gamma=0.9995,
+                policy_kwargs=policy_kwargs
+            )
     else:
         print("Stage 0: Creating a fresh, high-capacity brain from scratch...")
         policy_kwargs = dict(net_arch=dict(pi=[256, 256], vf=[256, 256]))
-        model = PPO("MlpPolicy", env, verbose=1, tensorboard_log=log_dir, learning_rate=0.0003, batch_size=128, gamma=0.9995, policy_kwargs=policy_kwargs)
+        model = PPO(
+            "MlpPolicy", env, verbose=1, tensorboard_log=log_dir,
+            learning_rate=0.0003,
+            n_steps=4096,
+            batch_size=256,
+            gamma=0.9995,
+            policy_kwargs=policy_kwargs
+        )
     
     print("Training is live! Monitor progress via TensorBoard.")
-    model.learn(total_timesteps=10_000_000, 
-                tb_log_name=RUN_NAME,
-                callback=callback_list,
-                reset_num_timesteps=True)
+    model.learn(
+        total_timesteps=10_000_000, 
+        tb_log_name=RUN_NAME,
+        callback=callback_list,
+        reset_num_timesteps=True
+    )
     
     final_model_path = os.path.join(stage_model_dir, f"teacher_ppo_{RUN_NAME}_final")
     model.save(final_model_path)
