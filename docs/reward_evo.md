@@ -311,3 +311,50 @@ Because removing `lock_z` made the original Stage 0 (2D) and Stage 1 (3D) identi
 #     lin_vel, ang_vel = p.getBaseVelocity(self.drone_id)
 #     p.resetBasePositionAndOrientation(self.drone_id, [pos[0], pos[1], 2.0], ori)
 #     p.resetBaseVelocity(self.drone_id, [lin_vel[0], lin_vel[1], 0.0], ang_vel)
+```
+
+## Stage 0.8: Policy Collapse, Observation Shock, and The Myopic Agent (240Hz Gamma Correction)
+
+**Behavior:** After integrating the PD controller, the agent successfully learned to fly and collect the first coin (reaching 1000-step episodes and spiking to -50 mean reward). However, around the 2 Million step mark, the policy suffered a catastrophic collapse. The agent reverted to crashing, and the reward flatlined back to -350.
+
+**Analysis:** This policy collapse was caused by two compounding factors specific to high-frequency (240Hz) continuous control:
+1. **Observation Shock:** When the first coin is collected, the `relative_pos` vector instantly snaps to the second coin (e.g., from `[0, 0, 0]` to `[-1.0, 1.5, 0]`). This sudden teleportation in the state space causes a massive spike in the agent's action outputs, destabilizing the drone and causing a crash. The agent learns that "collecting a coin equals immediate death" and subsequently refuses to collect even the first coin to avoid the penalty.
+2. **The Myopic Horizon (Discount Factor):** The default PPO `gamma` is `0.99`. In a 240Hz environment, a coin that is 11.3 meters away takes approximately 2700 steps to reach. With `gamma=0.99`, the future reward of `+300` is discounted to exactly `0.0000000004`. The agent is hyper-myopic; it cannot "see" the second or third coins because their discounted value is zero. Thus, overcoming the observation shock is not worth the risk.
+
+**Fix:** Adjusted the discount factor to mathematically match the 240Hz time domain.
+By changing the PPO hyperparameters to `gamma=0.9995`, the agent's horizon is extended. At `gamma=0.9995`, a coin 2700 steps away retains a perceived value of roughly `+77` points. This strong gradient incentivizes the agent to recover from the Observation Shock and pursue the remaining targets, effectively curing the policy collapse.
+
+**Code Changes:**
+```python
+# CHANGED in scripts/train_teacher.py
+# Extended the discount factor for high-frequency control
+# OLD:
+model = PPO("MlpPolicy", env, ...)
+# NEW:
+model = PPO("MlpPolicy", env, gamma=0.9995, ...)
+```
+
+## Stage 0.9: The "ETH Zurich" Physics & Perception Overhaul (Bridging Sim2Real and Cross-Modal Distillation)
+
+**Behavior:** The agent demonstrated capability in navigating to targets, but its internal logic was extremely fragile. It struggled to handle 3D rotations, drifted uncontrollably due to a lack of air resistance, and exhibited "blind spots" when turning. Most critically, the observation space was not strictly ego-centric (Body Frame), which would create a catastrophic bottleneck during the later Cross-Modal Distillation phase (where the Student CNN must learn from camera pixels, which inherently exist in the Body Frame).
+
+**Fix:** Implemented three industry-standard architectural overhauls inspired by the Robotics and Perception Group (ETH Zurich):
+1. **Body-Frame Coordinate Transformation:** The `relative_pos` vector (target location), `linear_vel`, and `angular_vel` were transformed from the World Frame to the Body Frame using the drone's rotation matrix. The agent now perceives targets as "forward/left/right" rather than "North/South," aligning perfectly with the future CNN's visual perspective.
+2. **Rotating LiDAR (Ego-Centric Sensors):** Previously, LiDAR rays were cast in fixed global directions. The ray-casting algorithm was rewritten to multiply local ray vectors by the drone's rotation matrix. The LiDAR array now dynamically rotates with the drone's Yaw, providing interpretable and consistent obstacle detection.
+3. **Aerodynamic Damping (Rotor Drag):** PyBullet's vacuum space was causing "ice-skating" overshoot behaviors. Artificial linear (`-0.5`) and angular (`-0.05`) damping forces were injected into the physics step. This synthetic air resistance allows the drone to brake naturally when attitude levels out, significantly easing the burden on the PD controller and RL policy.
+
+**Code Changes:**
+```python
+# CHANGED in drone_sim.py: Ego-centric coordinate transformation
+rot_matrix = np.array(p.getMatrixFromQuaternion(ori)).reshape(3, 3)
+local_vel = rot_matrix.T.dot(linear_vel)
+local_relative_pos = rot_matrix.T.dot(global_relative_pos)
+
+# CHANGED in drone_sim.py: Dynamic rotating LiDAR
+local_ray = np.array([math.cos(angle), math.sin(angle), 0])
+global_ray = rot_matrix.dot(local_ray)
+
+# ADDED in drone_sim.py: Aerodynamic Damping
+drag_force = [v * -0.5 for v in drone_vel]
+p.applyExternalForce(self.drone_id, -1, forceObj=drag_force, posObj=[0,0,0], flags=p.WORLD_FRAME)
+```

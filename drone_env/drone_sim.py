@@ -9,15 +9,14 @@ import os
 from .reward_functions import compute_dense_reward
 
 class RoomDroneEnv(gym.Env):
-    # lock_z parametresi init'ten tamamen kaldırıldı
     def __init__(self, gui=False, num_obstacles=0, randomize_obstacles=False, randomize_coins=False, reward_weights=None):
         super().__init__()
         
         self.client = p.connect(p.GUI if gui else p.DIRECT)
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
         
-        # Action space: [Target Pitch, Target Roll, Target Yaw Rate, Target Thrust]
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(4,), dtype=np.float32)
+        # Gözlem uzayı hala 31D ama artık hepsi Body Frame (Ego-centric)
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(31,), dtype=np.float32)
         
         self.room_bounds = [8.0, 8.0, 4.0]
@@ -151,18 +150,22 @@ class RoomDroneEnv(gym.Env):
         
         return self._get_obs(), {}
 
-    def _compute_lidar(self, drone_pos):
+    def _compute_lidar(self, drone_pos, rot_matrix):
+        # rot_matrix: Dronun o anki dönüş matrisi (3x3)
         ray_starts = []
         ray_ends = []
         offset = 0.25 
         
         for i in range(self.num_rays):
             angle = (2 * math.pi * i) / self.num_rays
-            dx = math.cos(angle)
-            dy = math.sin(angle)
+            # Create ray in local drone frame (XY plane)
+            local_ray = np.array([math.cos(angle), math.sin(angle), 0])
             
-            start = [drone_pos[0] + dx * offset, drone_pos[1] + dy * offset, drone_pos[2]]
-            end = [start[0] + dx * self.lidar_range, start[1] + dy * self.lidar_range, start[2]]
+            # Convert local ray to global frame using drone's rotation matrix
+            global_ray = rot_matrix.dot(local_ray)
+            
+            start = [drone_pos[0] + global_ray[0]*offset, drone_pos[1] + global_ray[1]*offset, drone_pos[2]]
+            end = [start[0] + global_ray[0]*self.lidar_range, start[1] + global_ray[1]*self.lidar_range, start[2]]
             
             ray_starts.append(start)
             ray_ends.append(end)
@@ -175,18 +178,30 @@ class RoomDroneEnv(gym.Env):
         drone_pos, ori = p.getBasePositionAndOrientation(self.drone_id)
         linear_vel, angular_vel = p.getBaseVelocity(self.drone_id)
         
+        # Get rotation matrix from drone's orientation quaternion
+        rot_matrix = np.array(p.getMatrixFromQuaternion(ori)).reshape(3, 3)
+        
+        # 1. Convert linear and angular velocities to Body Frame 
+        local_vel = rot_matrix.T.dot(linear_vel)
+        local_ang_vel = rot_matrix.T.dot(angular_vel)
+        
+        # 2. Convert global positions of coins to local positions relative to the drone
         if len(self.gold_data) > 0:
             distances = [math.sqrt(sum((d - val)**2 for d, val in zip(drone_pos, g["pos"]))) for g in self.gold_data]
             closest_idx = np.argmin(distances)
             closest_pos = self.gold_data[closest_idx]["pos"]
-            relative_pos = [g_val - d_val for g_val, d_val in zip(closest_pos, drone_pos)]
-        else:
-            relative_pos = [0, 0, 0]
             
-        lidar_data = self._compute_lidar(drone_pos)
-        
+            global_relative_pos = np.array([g_val - d_val for g_val, d_val in zip(closest_pos, drone_pos)])
+            local_relative_pos = rot_matrix.T.dot(global_relative_pos)
+        else:
+            local_relative_pos = np.array([0, 0, 0])
+            
+        # 3. Send Lidar 
+        lidar_data = self._compute_lidar(drone_pos, rot_matrix)
         euler = p.getEulerFromQuaternion(ori)
-        obs = np.concatenate([drone_pos, euler, linear_vel, angular_vel, relative_pos, lidar_data]).astype(np.float32)
+            
+        # Ego-centric
+        obs = np.concatenate([drone_pos, euler, local_vel, local_ang_vel, local_relative_pos, lidar_data]).astype(np.float32)
         return obs
 
     def step(self, action):
@@ -237,9 +252,19 @@ class RoomDroneEnv(gym.Env):
         torque_mag = ((forces[0] + forces[2]) - (forces[1] + forces[3])) * 0.01
         p.applyExternalTorque(self.drone_id, -1, [0, 0, torque_mag], flags=p.LINK_FRAME)
 
-        p.stepSimulation()
+        # --- ETH Zurich - Linear & Angular Damping ---
+        drone_vel, angular_vel = p.getBaseVelocity(self.drone_id)
+        drag_coeff_linear = -0.5  
+        drag_coeff_angular = -0.05
+        
+        drag_force = [v * drag_coeff_linear for v in drone_vel]
+        drag_torque = [w * drag_coeff_angular for w in angular_vel]
+        
+        p.applyExternalForce(self.drone_id, -1, forceObj=drag_force, posObj=[0,0,0], flags=p.WORLD_FRAME)
+        p.applyExternalTorque(self.drone_id, -1, torqueObj=drag_torque, flags=p.WORLD_FRAME)
+        # ------------------------------------------------------------------------
 
-        # lock_z if bloğu tamamen silindi. Drone artık gerçek 3D uçuşta!
+        p.stepSimulation()
         
         drone_pos, ori = p.getBasePositionAndOrientation(self.drone_id)
         drone_vel, _ = p.getBaseVelocity(self.drone_id)

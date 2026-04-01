@@ -6,7 +6,7 @@ stages:
     num_obstacles: 0
     randomize_obstacles: False
     randomize_coins: False
-    run_name: "Stage_0_Hover_and_Navigate"
+    run_name: "Stage_0_Hover_and_Navigate_gamma_fixed"
   stage_1:
     num_obstacles: 0
     randomize_obstacles: False

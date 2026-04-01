@@ -84,11 +84,13 @@ if __name__ == "__main__":
         else:
             print(f"WARNING: {prev_model_path} not found! Starting from scratch.")
             policy_kwargs = dict(net_arch=dict(pi=[256, 256], vf=[256, 256]))
-            model = PPO("MlpPolicy", env, verbose=1, tensorboard_log=log_dir, learning_rate=0.0003, batch_size=128, policy_kwargs=policy_kwargs)
+            # gamma=0.9995
+            model = PPO("MlpPolicy", env, verbose=1, tensorboard_log=log_dir, learning_rate=0.0003, batch_size=128, gamma=0.9995, policy_kwargs=policy_kwargs)
     else:
         print("Stage 0: Creating a fresh, high-capacity brain from scratch...")
         policy_kwargs = dict(net_arch=dict(pi=[256, 256], vf=[256, 256]))
-        model = PPO("MlpPolicy", env, verbose=1, tensorboard_log=log_dir, learning_rate=0.0003, batch_size=128, policy_kwargs=policy_kwargs)
+        # gamma=0.9995
+        model = PPO("MlpPolicy", env, verbose=1, tensorboard_log=log_dir, learning_rate=0.0003, batch_size=128, gamma=0.9995, policy_kwargs=policy_kwargs)
     
     print("Training is live! Monitor progress via TensorBoard.")
     model.learn(total_timesteps=10_000_000, 
