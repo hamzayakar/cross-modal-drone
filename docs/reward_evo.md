@@ -268,3 +268,46 @@ f1 = base_f + tau_pitch + tau_roll + tau_yaw
 f2 = base_f + tau_pitch - tau_roll - tau_yaw
 f3 = base_f - tau_pitch - tau_roll + tau_yaw
 ```
+
+## Stage 0.6: The Effort Penalty Paradox (Action Space Decoupling)
+
+**Behavior:** After migrating to the Hierarchical PD Control architecture, the agent exhibited extreme passivity. Instead of navigating toward the targets, it preferred to output near-zero actions `[0.0, 0.0, 0.0, 0.0]`, effectively hovering in place and refusing to pitch, roll, or yaw.
+
+**Fix:** The root cause was identified in the reward shaping function: the `effort_penalty`.
+[cite_start]In the previous "End-to-End" architecture, penalizing the sum of squared actions prevented the drone from spinning its motors wildly[cite: 102]. However, in the new Hierarchical architecture, the agent's action space represents **High-Level Intent** (Target Pitch, Roll, Yaw Rate) rather than raw electrical motor effort. 
+
+By continuing to penalize the action vector, the environment was mathematically punishing the agent for simply "making a decision to move." To eliminate this cognitive friction, the `effort_penalty_multiplier` was reduced to `0.0` in the YAML configuration. The physical motor effort is now inherently constrained and stabilized by the low-level PD controller, allowing the RL agent to freely issue attitude commands without artificial math penalties.
+
+**Code Changes:**
+```yaml
+# CHANGED in configs/teacher_ppo.yaml
+# OLD:
+  effort_penalty_multiplier: 0.001
+# NEW: Action space decoupled from raw effort; intent should not be penalized.
+  effort_penalty_multiplier: 0.0
+
+  ## Stage 0.7: The Z-Lock Trap & Curriculum Consolidation (Removing the Training Wheels)
+
+**Behavior:** After implementing the PD controller, the agent was still being trained using "Hovercraft Mode" (`lock_z: True`), which artificially forced its Z-velocity to `0.0` and clamped its altitude to `2.0m`. Because the agent's altitude was hardcoded, any changes it made to `action[3]` (Target Thrust) had zero effect on the environment. The RL agent quickly learned that this action output was useless and stopped optimizing it. When transitioned to the next curriculum stage (`lock_z: False`), the agent catastrophically crashed because its policy had never learned to manage thrust in a 3D space.
+
+**Fix:** Completely removed the `lock_z` constraint from the physics step. The new low-level PD controller already provides sufficient baseline stability, meaning the agent no longer needs artificial "training wheels" to survive its early steps. It can and must learn true 3D flight (managing thrust alongside attitude) from step zero. 
+
+Because removing `lock_z` made the original Stage 0 (2D) and Stage 1 (3D) identical in their objectives, the curriculum was consolidated. The redundant stage was eliminated, streamlining the training pipeline from 6 stages down to 5 (Stage 0 to 4).
+
+**Code Changes:**
+```yaml
+# CHANGED in configs/teacher_ppo.yaml
+# Removed all lock_z parameters.
+# Curriculum consolidated to 5 stages:
+  stage_0: "Stage_0_Hover_and_Navigate" (Empty room, Fixed coins)
+  stage_1: "Stage_1_RandomCoins"        (Empty room, Random coins)
+  stage_2: "Stage_2_FixedObs_FixedCoins"(Fixed obstacles, Fixed coins)
+  stage_3: "Stage_3_FixedObs_RandomCoins"(Fixed obstacles, Random coins)
+  stage_4: "Stage_4_Full_Autonomy"      (Random obstacles, Random coins)
+
+  # REMOVED from drone_sim.py step():
+# if self.lock_z:
+#     pos, ori = p.getBasePositionAndOrientation(self.drone_id)
+#     lin_vel, ang_vel = p.getBaseVelocity(self.drone_id)
+#     p.resetBasePositionAndOrientation(self.drone_id, [pos[0], pos[1], 2.0], ori)
+#     p.resetBaseVelocity(self.drone_id, [lin_vel[0], lin_vel[1], 0.0], ang_vel)

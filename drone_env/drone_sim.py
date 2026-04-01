@@ -9,16 +9,15 @@ import os
 from .reward_functions import compute_dense_reward
 
 class RoomDroneEnv(gym.Env):
-    def __init__(self, gui=False, num_obstacles=0, randomize_obstacles=False, randomize_coins=False, lock_z=False, reward_weights=None):
+    # lock_z parametresi init'ten tamamen kaldırıldı
+    def __init__(self, gui=False, num_obstacles=0, randomize_obstacles=False, randomize_coins=False, reward_weights=None):
         super().__init__()
         
         self.client = p.connect(p.GUI if gui else p.DIRECT)
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
         
-        # CHANGED: Action space remains 4D, but represents [Pitch, Roll, Yaw_Rate, Target_Thrust]
-        # Range [-1, 1] will be mapped to physical angles and forces in the step() function.
+        # Action space: [Target Pitch, Target Roll, Target Yaw Rate, Target Thrust]
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(4,), dtype=np.float32)
-        
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(31,), dtype=np.float32)
         
         self.room_bounds = [8.0, 8.0, 4.0]
@@ -27,7 +26,6 @@ class RoomDroneEnv(gym.Env):
         self.num_obstacles = num_obstacles
         self.randomize_obstacles = randomize_obstacles
         self.randomize_coins = randomize_coins
-        self.lock_z = lock_z
         self.reward_weights = reward_weights
         
         self.drone_id = None
@@ -195,16 +193,13 @@ class RoomDroneEnv(gym.Env):
         self.current_step += 1
         
         # ==============================================================
-        # NEW HIGH-LEVEL PD CONTROLLER (ATTITUDE CONTROL MODE)
+        # PD CONTROLLER (ATTITUDE CONTROL MODE)
         # ==============================================================
+        target_pitch = action[0] * (math.pi / 6)  
+        target_roll = action[1] * (math.pi / 6)   
+        target_yaw_rate = action[2] * 2.0         
+        target_thrust = ((action[3] + 1.0) / 2.0) * 20.0  
         
-        # 1. Map RL Agent Actions [-1, 1] to Physical Target Values
-        target_pitch = action[0] * (math.pi / 6)  # Max +/- 30 degrees forward/back
-        target_roll = action[1] * (math.pi / 6)   # Max +/- 30 degrees left/right
-        target_yaw_rate = action[2] * 2.0         # Max +/- 2.0 rad/s rotation
-        target_thrust = ((action[3] + 1.0) / 2.0) * 20.0  # Mapped to 0.0 N - 20.0 N total upward thrust
-        
-        # 2. Read Current Physical State
         _, ori = p.getBasePositionAndOrientation(self.drone_id)
         euler = p.getEulerFromQuaternion(ori)
         _, ang_vel = p.getBaseVelocity(self.drone_id)
@@ -212,54 +207,39 @@ class RoomDroneEnv(gym.Env):
         current_roll, current_pitch, current_yaw = euler
         current_yaw_rate = ang_vel[2]
         
-        # 3. PD Controller Gains (Tuned for 1kg Drone Stability)
-        Kp_ang = 8.0  # Proportional gain for correcting tilt
-        Kd_ang = 4.0  # Derivative gain for preventing oscillation/breakdancing
-        Kp_yaw = 3.0  # Proportional gain for yaw
+        Kp_ang = 8.0  
+        Kd_ang = 4.0  
+        Kp_yaw = 3.0  
         
-        # 4. Calculate Errors
         pitch_error = target_pitch - current_pitch
         roll_error = target_roll - current_roll
         yaw_rate_error = target_yaw_rate - current_yaw_rate
         
-        # 5. Compute Required Torques to fix the errors
         tau_pitch = (Kp_ang * pitch_error) - (Kd_ang * ang_vel[1])
         tau_roll = (Kp_ang * roll_error) - (Kd_ang * ang_vel[0])
         tau_yaw = Kp_yaw * yaw_rate_error
         
-        # 6. Motor Mixer (X-Configuration Math)
         base_f = target_thrust / 4.0
         
-        # Mapping Torques to the 4 Motors
-        f0 = base_f - tau_pitch + tau_roll - tau_yaw  # Front-Left
-        f1 = base_f + tau_pitch + tau_roll + tau_yaw  # Back-Left
-        f2 = base_f + tau_pitch - tau_roll - tau_yaw  # Back-Right
-        f3 = base_f - tau_pitch - tau_roll + tau_yaw  # Front-Right
+        f0 = base_f - tau_pitch + tau_roll - tau_yaw  
+        f1 = base_f + tau_pitch + tau_roll + tau_yaw  
+        f2 = base_f + tau_pitch - tau_roll - tau_yaw  
+        f3 = base_f - tau_pitch - tau_roll + tau_yaw  
         
-        # Clip individual motor limits to realistic values (0 N to 7.5 N per motor)
         forces = np.clip([f0, f1, f2, f3], 0.0, 7.5)
+        # ==============================================================
         
-        # ==============================================================
-        # END OF PD CONTROLLER
-        # ==============================================================
-
         rotor_offsets = [[0.12, 0.12, 0], [-0.12, 0.12, 0], [-0.12, -0.12, 0], [0.12, -0.12, 0]]
         
         for i in range(4):
             p.applyExternalForce(self.drone_id, -1, forceObj=[0, 0, forces[i]], posObj=rotor_offsets[i], flags=p.LINK_FRAME)
 
-        # Apply differential yaw torque directly to base link
         torque_mag = ((forces[0] + forces[2]) - (forces[1] + forces[3])) * 0.01
         p.applyExternalTorque(self.drone_id, -1, [0, 0, torque_mag], flags=p.LINK_FRAME)
 
         p.stepSimulation()
 
-        # Z-Lock (Hovercraft Mode) remains exactly the same for Stage 0
-        if self.lock_z:
-            pos, ori = p.getBasePositionAndOrientation(self.drone_id)
-            lin_vel, ang_vel = p.getBaseVelocity(self.drone_id)
-            p.resetBasePositionAndOrientation(self.drone_id, [pos[0], pos[1], 2.0], ori)
-            p.resetBaseVelocity(self.drone_id, [lin_vel[0], lin_vel[1], 0.0], ang_vel)
+        # lock_z if bloğu tamamen silindi. Drone artık gerçek 3D uçuşta!
         
         drone_pos, ori = p.getBasePositionAndOrientation(self.drone_id)
         drone_vel, _ = p.getBaseVelocity(self.drone_id)
@@ -289,7 +269,6 @@ class RoomDroneEnv(gym.Env):
             
         hx, hy, hz = self.room_bounds
 
-        # If it somehow breaches the PD limits and flips, it dies
         euler = p.getEulerFromQuaternion(ori)
         if abs(euler[0]) > 1.3 or abs(euler[1]) > 1.3:
             is_collision = True

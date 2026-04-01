@@ -1,43 +1,32 @@
 # ==========================================
-# CURRICULUM STAGES
+# CURRICULUM STAGES (Cleaned & Streamlined)
 # ==========================================
 stages:
   stage_0:
     num_obstacles: 0
     randomize_obstacles: False
     randomize_coins: False
-    lock_z: True
-    run_name: "Stage_0_Hovercraft_2D"
+    run_name: "Stage_0_Hover_and_Navigate"
   stage_1:
     num_obstacles: 0
     randomize_obstacles: False
-    randomize_coins: False
-    lock_z: False
-    run_name: "Stage_1_FixedCoins_3D"
-  stage_2:
-    num_obstacles: 0
-    randomize_obstacles: False
     randomize_coins: True
-    lock_z: False
-    run_name: "Stage_2_RandomCoins_3D"
+    run_name: "Stage_1_RandomCoins"
+  stage_2:
+    num_obstacles: 20
+    randomize_obstacles: False
+    randomize_coins: False
+    run_name: "Stage_2_FixedObs_FixedCoins"
   stage_3:
     num_obstacles: 20
     randomize_obstacles: False
-    randomize_coins: False
-    lock_z: False
-    run_name: "Stage_3_FixedObs_FixedCoins_3D"
-  stage_4:
-    num_obstacles: 20
-    randomize_obstacles: False
     randomize_coins: True
-    lock_z: False
-    run_name: "Stage_4_FixedObs_RandomCoins_3D"
-  stage_5:
+    run_name: "Stage_3_FixedObs_RandomCoins"
+  stage_4:
     num_obstacles: 20
     randomize_obstacles: True
     randomize_coins: True
-    lock_z: False
-    run_name: "Stage_5_RandomObs_RandomCoins_3D"
+    run_name: "Stage_4_Full_Autonomy"
 
 # ==========================================
 # REWARD WEIGHTS (Hunter Model)
@@ -46,7 +35,7 @@ rewards:
   alive_bonus: 0.02
   distance_penalty_multiplier: 0.02
   velocity_penalty_multiplier: 0.003
-  effort_penalty_multiplier: 0.001
+  effort_penalty_multiplier: 0.0
   lidar_penalty_multiplier: 0.5
   coin_collection_reward: 300.0
   success_bonus: 1000.0

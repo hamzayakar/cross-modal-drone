@@ -21,12 +21,10 @@ class SaveLatestCallback(BaseCallback):
         return True
 
 if __name__ == "__main__":
-    # 1. Parse CLI arguments
     parser = argparse.ArgumentParser(description="Train Drone PPO with Curriculum Stages")
-    parser.add_argument("--stage", type=int, default=0, help="Training stage level (0-5)")
+    parser.add_argument("--stage", type=int, default=0, help="Training stage level (0-4)")
     args = parser.parse_args()
 
-    # 2. Load configurations from YAML
     config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'configs', 'teacher_ppo.yaml'))
     with open(config_path, 'r') as file:
         config = yaml.safe_load(file)
@@ -42,12 +40,10 @@ if __name__ == "__main__":
     NUM_OBS = stage_config['num_obstacles']
     RAND_OBS = stage_config['randomize_obstacles']
     RAND_COINS = stage_config['randomize_coins']
-    LOCK_Z = stage_config['lock_z'] # YAML'dan oku
     RUN_NAME = stage_config['run_name']
 
     print(f"[{RUN_NAME}] Training Initialized (GUI Disabled for speed)...")
     
-    # 3. Setup Directories
     log_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'logs', 'teacher_ppo'))
     model_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'models'))
     
@@ -55,14 +51,13 @@ if __name__ == "__main__":
     os.makedirs(log_dir, exist_ok=True)
     os.makedirs(stage_model_dir, exist_ok=True)
     
-    # 4. Initialize Environments (lock_z dahil edildi)
-    env = RoomDroneEnv(gui=False, num_obstacles=NUM_OBS, randomize_obstacles=RAND_OBS, randomize_coins=RAND_COINS, lock_z=LOCK_Z, reward_weights=reward_weights)
+    # lock_z parametresi tamamen kaldırıldı
+    env = RoomDroneEnv(gui=False, num_obstacles=NUM_OBS, randomize_obstacles=RAND_OBS, randomize_coins=RAND_COINS, reward_weights=reward_weights)
     env = Monitor(env, log_dir)
     
-    eval_env = RoomDroneEnv(gui=False, num_obstacles=NUM_OBS, randomize_obstacles=RAND_OBS, randomize_coins=RAND_COINS, lock_z=LOCK_Z, reward_weights=reward_weights)
+    eval_env = RoomDroneEnv(gui=False, num_obstacles=NUM_OBS, randomize_obstacles=RAND_OBS, randomize_coins=RAND_COINS, reward_weights=reward_weights)
     eval_env = Monitor(eval_env)
     
-    # 5. Setup Callbacks (Eşik 1600.0)
     callback_on_best = StopTrainingOnRewardThreshold(reward_threshold=1600.0, verbose=1)
     
     eval_callback = EvalCallback(eval_env, 
@@ -78,7 +73,6 @@ if __name__ == "__main__":
     
     callback_list = CallbackList([eval_callback, save_latest_callback])
     
-    # 6. Transfer Learning (Curriculum) Logic
     if args.stage > 0:
         prev_stage_key = f"stage_{args.stage - 1}"
         prev_run_name = config['stages'][prev_stage_key]['run_name']
@@ -96,14 +90,12 @@ if __name__ == "__main__":
         policy_kwargs = dict(net_arch=dict(pi=[256, 256], vf=[256, 256]))
         model = PPO("MlpPolicy", env, verbose=1, tensorboard_log=log_dir, learning_rate=0.0003, batch_size=128, policy_kwargs=policy_kwargs)
     
-    # 7. Start Training
     print("Training is live! Monitor progress via TensorBoard.")
     model.learn(total_timesteps=10_000_000, 
                 tb_log_name=RUN_NAME,
                 callback=callback_list,
                 reset_num_timesteps=True)
     
-    # Save the final model just in case it didn't hit the threshold early
     final_model_path = os.path.join(stage_model_dir, f"teacher_ppo_{RUN_NAME}_final")
     model.save(final_model_path)
     print(f"Training complete! Final model saved to {final_model_path}.zip")
