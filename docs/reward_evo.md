@@ -521,3 +521,61 @@ action_diff = np.mean(np.square(action - self.prev_action))
 # CHANGED in scripts/train_teacher.py: Added Entropy
 model = PPO(..., ent_coef=0.01)
 ```
+
+## Stage 0.17: Directional Blindness (Euler Frame Desync)
+
+**Behavior:** Even after correcting the motor mixing matrix, the agent experienced an unpredictable "1-0-1-0" death spiral. Sometimes it hovered perfectly, but most of the time, it instantly flipped 90 degrees and crashed the millisecond it spawned (when spawning with non-zero yaw due to Symmetry Breaking).
+
+**Bug (Euler Frame Desync - "Directional Blindness"):**
+The PD Controller was designed for Body-Frame stabilization, but PyBullet's `getEulerFromQuaternion` returns Pitch and Roll in the *World Frame*. If the drone spawned facing East (Yaw = 90°) and pitched forward (Body Pitch), the physics engine reported a World Roll. The PD controller, seeing a "Roll error", would command a violent sideways correction, causing the drone to tear itself apart trying to correct a non-existent mistake.
+*Fix:* Implemented a 2D trigonometric rotation matrix to dynamically convert World Pitch/Roll into Body Pitch/Roll based on the current Yaw angle. The PD controller is no longer "blind" to its own heading.
+
+**Code Changes:**
+```python
+# CHANGED in drone_sim.py: Euler World-to-Body Transformation
+world_pitch_raw = euler[0]  # X rotation
+world_roll_raw  = euler[1]  # Y rotation
+body_pitch_raw = world_pitch_raw * math.cos(current_yaw) + world_roll_raw * math.sin(current_yaw)
+body_roll_raw  = -world_pitch_raw * math.sin(current_yaw) + world_roll_raw * math.cos(current_yaw)
+```
+
+## Stage 0.18: The Phantom Torque (WORLD_FRAME Lever Arm — The Root Bug)
+
+**Behavior:** After all previous fixes, the drone still died within ~80 steps (~0.33 seconds) by rolling past the 75-degree tilt threshold. Critically, the failure was **position-dependent**: a drone spawned at exactly `[0, 0, 2.0]` with `action=[0,0,0,0]` flew perfectly; a drone spawned at `[0, 0.1, 2.0]` died immediately. Angular velocity grew at a perfectly constant rate each step — a textbook signature of a constant phantom torque proportional to position offset.
+
+**Root Cause — A Misunderstood PyBullet API:**
+The aerodynamic drag force was being applied as:
+```python
+p.applyExternalForce(..., posObj=[0, 0, 0], flags=p.WORLD_FRAME)
+```
+A comment in the code said *"applied to drone's Center of Mass [0,0,0]"* — this is **wrong**. PyBullet's `applyExternalForce` interprets `posObj` according to the `flags` argument:
+
+- `posObj=[0,0,0]` + `WORLD_FRAME` → force applied at the **world origin** in world space
+- `posObj=drone_pos` + `WORLD_FRAME` → force applied at the **drone's actual COM**
+
+When the drone is at world position `[x, y, z]`, the `[0,0,0]` application creates an invisible lever arm:
+```
+r = [0,0,0] − [x, y, z] = [−x, −y, −z]
+τ = r × F_drag
+```
+This phantom torque grows with altitude (z increases as the drone rises) and with speed (F_drag scales with velocity). Together, they produce an ever-increasing angular acceleration that flips the drone. This is why the bug was invisible at [0,0] but lethal everywhere else.
+
+**History:** Stage 0.9 introduced the drag force with `posObj=[0,0,0]`. At that point, Symmetry Breaking (Stage 0.14) had not yet been added, so the drone always spawned at [0,0], making the bug invisible. When Symmetry Breaking was added in 0.14, the phantom torque activated but was misattributed to other causes (motor mixing, Euler axes) through Stages 0.15-0.17. During debugging, `posObj=drone_pos_current` was briefly tried (the actual correct fix), but was wrongly reversed after an incorrect analysis claimed it created "a phantom pole above the drone."
+
+**Fix:**
+Capture `drone_pos_pre` from the `getBasePositionAndOrientation` call already made at the top of `step()` (previously discarded with `_`), and use it as the force application point.
+
+**Code Changes:**
+```python
+# CHANGED in drone_sim.py step(): Capture drone position instead of discarding it
+# FROM: _, ori = p.getBasePositionAndOrientation(self.drone_id)
+# TO:   drone_pos_pre, ori = p.getBasePositionAndOrientation(self.drone_id)
+
+# CHANGED in drone_sim.py step(): Apply drag at actual COM, not world origin
+# FROM: p.applyExternalForce(..., posObj=[0, 0, 0], flags=p.WORLD_FRAME)
+# TO:   p.applyExternalForce(..., posObj=list(drone_pos_pre), flags=p.WORLD_FRAME)
+```
+
+**Verification:**
+With `action=[0,0,0,0]`, drone rises slowly and smoothly to ceiling over ~30 seconds. Zero deaths across 20 test episodes at random spawn positions and yaw angles. Stage 0 training is now unblocked.
+
