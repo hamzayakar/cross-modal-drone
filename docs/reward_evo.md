@@ -15,7 +15,9 @@ $$\text{Target Thrust} = \frac{\text{action}[3] + 1.0}{2.0} \times 20.0$$
 This means a neutral output of $0.0$ yields exactly $10.0 \text{ N}$ of total thrust ($2.5 \text{ N}$ per motor), which perfectly counteracts gravity, creating a natural **Hover Bias**. The low-level PD controller then distributes this base thrust, clamped strictly at $7.5 \text{ N}$ per motor (Max $30 \text{ N}$ total), to execute the agent's target pitch, roll, and yaw commands. This provides a realistic **3:1 Thrust-to-Weight Ratio**, allowing agile recovery while strictly preventing physically impossible negative thrust.
 
 ## 2. The Curriculum Initialization Distance ("The Golden Ratio")
-In Stage 0, the first coin is spawned exactly $1.0 \text{ meter}$ in front of the drone. This is not an arbitrary number; it mathematically balances the reward economy to prevent the agent from bleeding points simply for existing.
+In Stage 0, the first coin is placed exactly $1.0 \text{ meter}$ away from the drone's spawn position (at World coordinate `[1.0, 0.0, 2.0]`, drone spawns near `[0, 0, 2.0]`). This is not an arbitrary number; it mathematically balances the reward economy to prevent the agent from bleeding points simply for existing.
+
+**Note on direction:** The drone is Y-forward (body +Y = nose direction). At Yaw = 0, the coin at `[1.0, 0.0, 2.0]` is $1\text{m}$ to the drone's **right** (World +X), not ahead. With Symmetry Breaking (Stage 0.14) randomizing spawn Yaw across $[-\pi, +\pi]$, the coin is in a different body-relative direction every episode. This is intentional — the benefit of force-feeding is **proximity** (the coin is always $\approx 1\text{m}$ away, not $8\text{m}$ across the room), not direction. The ego-centric compass vector (`local_relative_pos`) in the observation always points the agent toward the coin regardless of heading.
 
 Based on my YAML config:
 - `alive_bonus`: $0.02$
@@ -25,7 +27,7 @@ The net reward at spawn is calculated as:
 $$\text{Net Reward} = \text{Alive Bonus} - (\text{Distance Penalty} \times \text{Distance})$$
 $$\text{Net Reward} = 0.02 - (0.02 \times 1.0) = \mathbf{0.0}$$
 
-At a distance of exactly $1.0 \text{ m}$, the agent receives exactly $0.0$ points per step. It does not suffer penalty bleed, nor does it farm free points. If the agent moves even $1 \text{ cm}$ closer (distance $= 0.99 \text{ m}$), the equation yields a positive reward, instantly teaching the agent that forward movement equals profit.
+At a distance of exactly $1.0 \text{ m}$, the agent receives exactly $0.0$ points per step. It does not suffer penalty bleed, nor does it farm free points. If the agent moves even $1 \text{ cm}$ closer (distance $= 0.99 \text{ m}$), the equation yields a positive reward, teaching the agent that moving toward the coin equals profit.
 
 ## 3. Cognitive Upgrades (Resolving the Training Bottleneck)
 Despite an environment that was (in theory) mathematically sound, the initial `[64, 64]` Multilayer Perceptron (MLP) architecture failed to learn stable flight.
@@ -114,7 +116,7 @@ reward -= 0.001 * effort
 1. The raw action output of `0.0` resulted in `0 N` thrust, causing the drone to drop like a rock. Negative actions caused physically impossible reverse thrust, pulling the drone into an immediate 75-degree fatal tilt.
 2. In a $2048 \text{ m}^3$ room, the probability of randomly stumbling into a $40 \text{ cm}$ reward zone was near zero (Sparse Reward problem), meaning the agent never discovered the massive `+300` coin reward.
 **Fix:** 1. **Hover Bias (Action Normalization):** I mapped the agent's $[-1.0, 1.0]$ output space so that $0.0$ equals the exact physical hover force ($2.45 \text{ N}$ per motor), and clamped forces to $[0.0, 10.0] \text{ N}$ to enforce physical limits.
-2. **The "Force-Feeding" Trick (Curriculum Initialization):** For Stage 0, I hardcoded the first coin to spawn exactly $1.0 \text{ m}$ in front of the drone's nose to guarantee early reward discovery and break the local optima of "just staying alive".
+2. **The "Force-Feeding" Trick (Curriculum Initialization):** For Stage 0, I hardcoded the first coin at World position `[1.0, 0.0, 2.0]`, placing it exactly $1.0 \text{ m}$ from the drone's spawn point, to guarantee early reward discovery and break the local optima of "just staying alive". Note: this coin is to the drone's **right** at Yaw = 0, not ahead — the force-feeding benefit is **proximity**, not direction. See "Golden Ratio" in section 2 for the full explanation.
 
 **Code Changes:**
 ```python
@@ -128,9 +130,11 @@ forces = np.clip(raw_forces, 0.0, 10.0)
 # CHANGED: Coin Spawning (Curriculum Stage 0)
 # OLD: All 4 coins were placed exactly in the far corners.
 # fixed_positions = [[4.0, 4.0, 2.0], [-4.0, 4.0, 2.0], [4.0, -4.0, 2.0], [-4.0, -4.0, 2.0]]
-# NEW: Spawning the first target directly in the flight path (1 meter ahead) to teach the reward.
+# NEW: Placing the first coin 1m away from spawn to guarantee early reward discovery.
+# NOTE: [1.0, 0.0, 2.0] is 1m in World +X. Drone is Y-forward, so this is to the
+# drone's RIGHT at Yaw=0, not ahead. The benefit is proximity, not direction.
 fixed_positions = [
-    [1.0, 0.0, 2.0],  # Right in front of the drone's nose!
+    [1.0, 0.0, 2.0],  # 1m from spawn — ego-centric compass guides the agent regardless of heading
     [0.0, 1.5, 2.0],
     [4.0, 4.0, 2.0],
     [-4.0, -4.0, 2.0]
@@ -579,3 +583,83 @@ Capture `drone_pos_pre` from the `getBasePositionAndOrientation` call already ma
 
 **Expected Result:**
 With `action=[0,0,0,0]`, the drone should rise slowly and smoothly to the ceiling without dying at random spawn positions. The phantom torque is gone — Stage 0 training is currently running to validate whether the policy will converge this time.
+
+## Stage 0.19: Perceptual Aliasing & Yaw Torque Sign (Two-Bug Root Cause Analysis)
+
+**Behavior:** After the phantom torque fix (0.18), the drone survived longer but success_rate remained 0% at 1M steps. The reward improved (−330 → −175) and episode length rose to ~1000 steps, but no full coin collection was observed. The policy appeared to know how to fly but could not correlate its actions with consistent outcomes.
+
+**Bug 1 — Perceptual Aliasing (World-Frame Observation vs Body-Frame PD):**
+Stage 0.17 correctly fixed the PD controller to use Body-Frame pitch and roll. However, `_get_obs()` was never updated. It continued sending raw World Euler angles (`euler[0]`, `euler[1]`) as the agent's pitch and roll observation.
+
+With Symmetry Breaking (Stage 0.14) randomizing spawn Yaw across `[−π, π]`, the consequence was catastrophic:
+- At Yaw = 90°: world `euler[0]` ≈ body roll, world `euler[1]` ≈ body pitch. The axes were completely swapped.
+- At Yaw = 180°: pitch sign was inverted.
+
+From the neural network's perspective, the physical laws governing pitch and roll appeared to **change randomly at every episode**. Convergence was mathematically impossible at non-zero yaw.
+
+Additionally, the observation sent raw `euler[0]` (PyBullet convention: positive = nose UP), while the PD controller defined `current_pitch = -body_pitch_raw` (positive = nose DOWN). Even at Yaw = 0, the observation pitch and PD pitch had opposite signs.
+
+*Fix:* Applied the exact same 2D yaw rotation used in `step()` to `_get_obs()`, converting world euler to body-frame pitch/roll before putting them in the observation. Sign convention now matches the PD: **nose DOWN = positive, roll RIGHT = positive.**
+
+**Bug 2 — Yaw Torque Inverted (Destabilizing PD Loop):**
+Rotor forces `[0, 0, F]` applied at positions `[x, y, 0]` in `LINK_FRAME` produce torque `r × F = [y·F, −x·F, 0]`. The **Z-component is zero**. The explicit `torque_mag` is therefore the **sole yaw control mechanism** — there is no other source of yaw torque in the simulation.
+
+The original formula:
+```python
+torque_mag = ((forces[0] + forces[2]) - (forces[1] + forces[3])) * 0.01
+```
+
+Verified against the Crazyflie/URDF motor spin directions (confirmed via Bitcraze documentation):
+- Motors 0, 2 (prop0 front-right, prop2 rear-left) = **CCW** → CW reaction on body (−Z)
+- Motors 1, 3 (prop1 front-left, prop3 rear-right) = **CW** → CCW reaction on body (+Z)
+- Physically correct net torque: `((F1+F3) − (F0+F2)) * k`
+
+The original formula had the sign **reversed**. When the PD demanded CCW correction (tau_yaw > 0), the motor mixing correctly increased CW rotors (1,3) and decreased CCW rotors (0,2), but `torque_mag` then applied a CW body torque. The feedback loop was **destabilizing**: the harder the PD tried to correct yaw, the faster the drone spun in the wrong direction.
+
+*Fix:* Inverted the `torque_mag` formula sign.
+
+**Code Changes:**
+```python
+# CHANGED in drone_sim.py _get_obs(): Body-Frame Euler Transformation
+# OLD:
+current_pitch = euler[0]   # raw world X rotation
+current_roll  = euler[1]   # raw world Y rotation
+
+# NEW: Mirror the same 2D yaw rotation used in step() PD controller
+body_pitch_raw = world_pitch_raw * math.cos(current_yaw) + world_roll_raw * math.sin(current_yaw)
+body_roll_raw  = -world_pitch_raw * math.sin(current_yaw) + world_roll_raw * math.cos(current_yaw)
+current_pitch  = -body_pitch_raw   # Nose DOWN = positive (matches PD convention)
+current_roll   =  body_roll_raw    # Roll RIGHT = positive (matches PD convention)
+
+# CHANGED in drone_sim.py step(): Yaw Torque Sign
+# OLD: torque_mag = ((forces[0] + forces[2]) - (forces[1] + forces[3])) * 0.01
+# NEW:
+torque_mag = ((forces[1] + forces[3]) - (forces[0] + forces[2])) * 0.01
+```
+
+## Stage 0.20: Hallucinated Reward (Noisy LiDAR as Reward Judge)
+
+**Behavior:** Not a training failure, but an architectural impurity identified during review.
+
+**Bug — The Noisy Judge:**
+`_get_obs()` injects Gaussian noise (`σ = 0.01`) into the full 50-D observation vector before returning it, including the 36 LiDAR fractions. In `step()`, the reward function was extracting LiDAR from this noisy array:
+
+```python
+obs = self._get_obs()      # Noise applied inside
+lidar_data = obs[-36:]     # Extracted noisy LiDAR
+reward = compute_dense_reward(..., lidar_data, ...)  # Judge uses hallucinated data
+```
+
+This violates the fundamental RL principle: **the agent perceives through noisy sensors, but the environment rewards based on ground truth.** A lidar reading of `0.105` (safe, no penalty) could become `0.095` after noise and trigger an undeserved proximity penalty.
+
+The practical impact is small (`max hallucinated penalty ≈ 0.005` per step, Gaussian noise averages to zero so there is no systematic bias), but the architecture is wrong.
+
+**Fix:** Compute a separate clean LiDAR scan directly from PyBullet for reward evaluation. `drone_pos` and `ori` are already available in `step()` from the post-physics-step re-fetch, so no extra API calls are needed beyond the `_compute_lidar()` call itself.
+
+**Code Changes:**
+```python
+# CHANGED in drone_sim.py step(): Separate clean LiDAR for reward
+obs = self._get_obs()                              # Agent receives noisy observation
+clean_lidar = self._compute_lidar(drone_pos, ori)  # Ground truth for the reward judge
+reward = compute_dense_reward(..., clean_lidar, ...)
+```

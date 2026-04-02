@@ -109,7 +109,10 @@ class RoomDroneEnv(gym.Env):
         self.gold_data = []
         
         if not self.randomize_coins:
-            # First coin 1m ahead: Golden Ratio spawn for curriculum force-feeding
+            # First coin 1m from spawn (World [1,0,2]).
+            # NOTE: Drone is Y-forward. At Yaw=0 this coin is to the drone's RIGHT (+X),
+            # not ahead (+Y). Force-feeding benefit is proximity (~1m away), not direction.
+            # The ego-centric compass vector guides the agent regardless of heading.
             fixed_positions = [
                 [1.0, 0.0, 2.0],
                 [0.0, 1.5, 2.0],
@@ -227,12 +230,22 @@ class RoomDroneEnv(gym.Env):
             
         lidar_data = self._compute_lidar(drone_pos, ori)
         
-        # For a Y-forward drone: euler[0] = X-axis rotation = pitch (nose up/down)
-        #                        euler[1] = Y-axis rotation = roll  (tilt left/right)
         euler = p.getEulerFromQuaternion(ori)
-        current_pitch = euler[0]
-        current_roll  = euler[1]
-        current_yaw   = euler[2]
+        world_pitch_raw = euler[0]
+        world_roll_raw  = euler[1]
+        current_yaw     = euler[2]
+
+        # FIX (Stage 0.19): Convert World Euler to Body Euler for observation.
+        # Step() corrects PD controller to Body Frame (Stage 0.17), but _get_obs()
+        # was still sending raw World euler. With random yaw (Stage 0.14), at Yaw=90°
+        # world pitch ≈ body roll and vice-versa. The agent was seeing axes swap randomly
+        # every episode, making pitch/roll correlation impossible to learn.
+        # Mirror the exact same 2D rotation used in step() + sign convention.
+        body_pitch_raw = world_pitch_raw * math.cos(current_yaw) + world_roll_raw * math.sin(current_yaw)
+        body_roll_raw  = -world_pitch_raw * math.sin(current_yaw) + world_roll_raw * math.cos(current_yaw)
+        current_pitch = -body_pitch_raw  # Nose DOWN = positive, matches PD convention
+        current_roll  =  body_roll_raw   # Roll RIGHT = positive, matches PD convention
+
         yaw_sin = math.sin(current_yaw)
         yaw_cos = math.cos(current_yaw)
 
@@ -240,7 +253,7 @@ class RoomDroneEnv(gym.Env):
 
         obs = np.concatenate([
             z_altitude,                    # 1D
-            [current_roll, current_pitch], # 2D — roll=euler[1], pitch=euler[0]
+            [current_roll, current_pitch], # 2D — Body-Frame roll & pitch (nose-down positive)
             [yaw_sin, yaw_cos],            # 2D — continuous yaw
             local_vel,                     # 3D
             local_ang_vel,                 # 3D
@@ -346,7 +359,12 @@ class RoomDroneEnv(gym.Env):
                                  flags=p.LINK_FRAME)
 
         # Apply differential yaw torque
-        torque_mag = ((forces[0] + forces[2]) - (forces[1] + forces[3])) * 0.01
+        # FIX (Stage 0.19): Sign was inverted. Rotor forces [0,0,F] at [x,y,0] in LINK_FRAME
+        # produce only X/Y torque (r×F = [y·F, -x·F, 0]), so Z torque = 0 from forces alone.
+        # torque_mag is the ONLY yaw mechanism. Physics: CCW rotors (0,2) create CW (-Z)
+        # reaction; CW rotors (1,3) create CCW (+Z) reaction.
+        # Correct formula: ((F1+F3) - (F0+F2)) * k
+        torque_mag = ((forces[1] + forces[3]) - (forces[0] + forces[2])) * 0.01
         p.applyExternalTorque(self.drone_id, -1,
                               torqueObj=[0, 0, torque_mag],
                               flags=p.LINK_FRAME)
@@ -426,13 +444,20 @@ class RoomDroneEnv(gym.Env):
 
         # Construct Observation
         obs = self._get_obs()
-        lidar_data = obs[-36:]
+        # FIX (Stage 0.20): Use clean (pre-noise) LiDAR for reward computation.
+        # _get_obs() injects Gaussian noise into the full observation vector.
+        # Extracting LiDAR from that noisy array and passing it to the reward function
+        # means the "judge" evaluates hallucinated proximity readings — a lidar fraction
+        # of 0.105 (safe) could become 0.095 after noise and incorrectly trigger a penalty.
+        # The agent must perceive the world through noisy sensors, but reward must reflect
+        # ground truth. drone_pos and ori are already available from the post-step re-fetch.
+        clean_lidar = self._compute_lidar(drone_pos, ori)
         info['is_success'] = is_success
 
         # Compute Reward
         reward = compute_dense_reward(
             drone_pos, drone_vel, action, current_distance,
-            is_collision, is_success, lidar_data, coin_collected,
+            is_collision, is_success, clean_lidar, coin_collected,
             action_diff,
             reward_weights=self.reward_weights
         )
