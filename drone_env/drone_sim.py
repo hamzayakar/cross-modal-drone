@@ -227,19 +227,20 @@ class RoomDroneEnv(gym.Env):
             
         lidar_data = self._compute_lidar(drone_pos, ori)
         
-        # PyBullet getEulerFromQuaternion returns (roll, pitch, yaw)
+        # For a Y-forward drone: euler[0] = X-axis rotation = pitch (nose up/down)
+        #                        euler[1] = Y-axis rotation = roll  (tilt left/right)
         euler = p.getEulerFromQuaternion(ori)
-        current_roll  = euler[0]
-        current_pitch = euler[1]
+        current_pitch = euler[0]
+        current_roll  = euler[1]
         current_yaw   = euler[2]
         yaw_sin = math.sin(current_yaw)
         yaw_cos = math.cos(current_yaw)
-        
+
         z_altitude = np.array([drone_pos[2]], dtype=np.float32)
-        
+
         obs = np.concatenate([
             z_altitude,                    # 1D
-            [current_roll, current_pitch], # 2D
+            [current_roll, current_pitch], # 2D — roll=euler[1], pitch=euler[0]
             [yaw_sin, yaw_cos],            # 2D — continuous yaw
             local_vel,                     # 3D
             local_ang_vel,                 # 3D
@@ -336,7 +337,8 @@ class RoomDroneEnv(gym.Env):
         # ==============================================================
 
         # Apply individual rotor forces in Body Frame (LINK_FRAME)
-        rotor_offsets = [[0.12, 0.12, 0], [-0.12, 0.12, 0], [-0.12, -0.12, 0], [0.12, -0.12, 0]]
+        # URDF prop offsets are ±0.028m × globalScaling=4.0 → ±0.112m
+        rotor_offsets = [[0.112, 0.112, 0], [-0.112, 0.112, 0], [-0.112, -0.112, 0], [0.112, -0.112, 0]]
         for i in range(4):
             p.applyExternalForce(self.drone_id, -1,
                                  forceObj=[0, 0, forces[i]],

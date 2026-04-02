@@ -263,7 +263,7 @@ target_thrust = ((action[3] + 1.0) / 2.0) * 20.0
 tau_pitch = (Kp_ang * pitch_error) - (Kd_ang * ang_vel[1])
 tau_roll = (Kp_ang * roll_error) - (Kd_ang * ang_vel[0])
 tau_yaw = Kp_yaw * yaw_rate_error
-
+   
 # X-Configuration Motor Mixing
 f0 = base_f - tau_pitch + tau_roll - tau_yaw
 f1 = base_f + tau_pitch + tau_roll + tau_yaw
@@ -276,7 +276,7 @@ f3 = base_f - tau_pitch - tau_roll + tau_yaw
 **Behavior:** After migrating to the Hierarchical PD Control architecture, the agent exhibited extreme passivity. Instead of navigating toward the targets, it preferred to output near-zero actions `[0.0, 0.0, 0.0, 0.0]`, effectively hovering in place and refusing to pitch, roll, or yaw.
 
 **Fix:** The root cause was identified in the reward shaping function: the `effort_penalty`.
-[cite_start]In the previous "End-to-End" architecture, penalizing the sum of squared actions prevented the drone from spinning its motors wildly[cite: 102]. However, in the new Hierarchical architecture, the agent's action space represents **High-Level Intent** (Target Pitch, Roll, Yaw Rate) rather than raw electrical motor effort. 
+In the previous "End-to-End" architecture, penalizing the sum of squared actions prevented the drone from spinning its motors wildly[cite: 102]. However, in the new Hierarchical architecture, the agent's action space represents **High-Level Intent** (Target Pitch, Roll, Yaw Rate) rather than raw electrical motor effort. 
 
 By continuing to penalize the action vector, the environment was mathematically punishing the agent for simply "making a decision to move." To eliminate this cognitive friction, the `effort_penalty_multiplier` was reduced to `0.0` in the YAML configuration. The physical motor effort is now inherently constrained and stabilized by the low-level PD controller, allowing the RL agent to freely issue attitude commands without artificial math penalties.
 
@@ -287,8 +287,9 @@ By continuing to penalize the action vector, the environment was mathematically 
   effort_penalty_multiplier: 0.001
 # NEW: Action space decoupled from raw effort; intent should not be penalized.
   effort_penalty_multiplier: 0.0
+```
 
-  ## Stage 0.7: The Z-Lock Trap & Curriculum Consolidation (Removing the Training Wheels)
+## Stage 0.7: The Z-Lock Trap & Curriculum Consolidation (Removing the Training Wheels)
 
 **Behavior:** After implementing the PD controller, the agent was still being trained using "Hovercraft Mode" (`lock_z: True`), which artificially forced its Z-velocity to `0.0` and clamped its altitude to `2.0m`. Because the agent's altitude was hardcoded, any changes it made to `action[3]` (Target Thrust) had zero effect on the environment. The RL agent quickly learned that this action output was useless and stopped optimizing it. When transitioned to the next curriculum stage (`lock_z: False`), the agent catastrophically crashed because its policy had never learned to manage thrust in a 3D space.
 
