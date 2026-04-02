@@ -128,6 +128,7 @@ class RoomDroneEnv(gym.Env):
             # FIX: Z minimum raised to 1.0 to prevent coins spawning near the death zone (z < 0.3)
             pos = [np.random.uniform(-7.0, 7.0), np.random.uniform(-7.0, 7.0), np.random.uniform(1.0, 6.0)]
             
+            # Exclusion zone check around the start point
             if math.sqrt(pos[0]**2 + pos[1]**2 + (pos[2]-1.0)**2) < 1.0:
                 continue 
                 
@@ -149,6 +150,7 @@ class RoomDroneEnv(gym.Env):
         super().reset(seed=seed)
         p.resetSimulation(self.client)
         p.setGravity(0, 0, -9.81)
+        
         # FIX: Explicitly set timestep to avoid dependency on PyBullet version defaults
         p.setTimeStep(1.0 / 240.0)
         self.current_step = 0
@@ -158,8 +160,7 @@ class RoomDroneEnv(gym.Env):
         self._build_closed_room()
         self._spawn_obstacles()
         
-        # FIX: Symmetry Breaking — use self.np_random (seeded by Gymnasium) instead of
-        # np.random.default_rng() which would break deterministic seed management.
+        # FIX: Symmetry Breaking — use self.np_random (seeded by Gymnasium)
         start_x = self.np_random.uniform(-0.5, 0.5)
         start_y = self.np_random.uniform(-0.5, 0.5)
         start_yaw = self.np_random.uniform(-math.pi, math.pi)
@@ -179,10 +180,7 @@ class RoomDroneEnv(gym.Env):
         Casts 36 rays in a Yaw-only stabilized horizontal plane.
         
         FIX: Previously used the full 3x3 rotation matrix, which caused projection
-        shrinkage when the drone pitched/rolled. Dropping global_ray[2] while keeping
-        XY components extracts a 2D projection of a 3D unit vector — so at 45deg pitch,
-        ray length shrank from 5.0m to 3.53m, distorting into an ellipse.
-        
+        shrinkage when the drone pitched/rolled.
         Solution: Rotate rays only by Yaw. This gimbal-stabilized approach keeps the
         LiDAR perfectly horizontal at all times, matching real-world 2D LiDAR behavior.
         """
@@ -259,8 +257,8 @@ class RoomDroneEnv(gym.Env):
     def step(self, action):
         self.current_step += 1
         
-        # Action Smoothness (Jerk) Penalty
-        action_diff = np.sum(np.square(action - self.prev_action))
+        # FIX: Action Smoothness Penalty (Jerk) now uses np.mean to prevent math overshoot
+        action_diff = np.mean(np.square(action - self.prev_action))
         self.prev_action = action.copy()
         
         # ==============================================================
@@ -268,7 +266,7 @@ class RoomDroneEnv(gym.Env):
         # ==============================================================
         target_pitch = action[0] * (math.pi / 6)   # max ±30 degrees
         target_roll = action[1] * (math.pi / 6)    # max ±30 degrees
-        target_yaw_rate = action[2] * 2.0           # max ±2 rad/s
+        target_yaw_rate = action[2] * 2.0          # max ±2 rad/s
         target_thrust = ((action[3] + 1.0) / 2.0) * 20.0  # 0 to 20N total
         
         _, ori = p.getBasePositionAndOrientation(self.drone_id)
@@ -282,9 +280,10 @@ class RoomDroneEnv(gym.Env):
         current_roll, current_pitch, current_yaw = euler
         current_yaw_rate = local_ang_vel[2]
         
-        Kp_ang = 8.0  
-        Kd_ang = 4.0  
-        Kp_yaw = 3.0  
+        # FIX: Softened PD gains to prevent motor clamping and instability
+        Kp_ang = 5.0  
+        Kd_ang = 3.0  
+        Kp_yaw = 2.0  
         
         pitch_error = target_pitch - current_pitch
         roll_error = target_roll - current_roll
@@ -297,11 +296,12 @@ class RoomDroneEnv(gym.Env):
         
         base_f = target_thrust / 4.0
         
-        # X-Configuration Motor Mixing
+        # CRITICAL FIX: Corrected Motor Mixing Matrix based on specific cf2x URDF coordinate system
+        # Motor 0 (Front-Right), Motor 1 (Front-Left), Motor 2 (Rear-Left), Motor 3 (Rear-Right)
         f0 = base_f - tau_pitch + tau_roll - tau_yaw  
-        f1 = base_f + tau_pitch + tau_roll + tau_yaw  
+        f1 = base_f - tau_pitch - tau_roll + tau_yaw  
         f2 = base_f + tau_pitch - tau_roll - tau_yaw  
-        f3 = base_f - tau_pitch - tau_roll + tau_yaw  
+        f3 = base_f + tau_pitch + tau_roll + tau_yaw  
         
         forces = np.clip([f0, f1, f2, f3], 0.0, 7.5)
         # ==============================================================
@@ -342,7 +342,8 @@ class RoomDroneEnv(gym.Env):
             closest_idx = np.argmin(distances)
             current_distance = distances[closest_idx]
             
-            if current_distance < 0.4: 
+            # FIX: Expanded collection radius (0.4 to 0.6) to match the physical scale of the 36cm drone
+            if current_distance < 0.6: 
                 p.removeBody(self.gold_data[closest_idx]["id"])
                 self.gold_data.pop(closest_idx)
                 coin_collected = True 

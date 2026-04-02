@@ -147,6 +147,7 @@ if __name__ == "__main__":
     # FIX: n_steps raised from default 2048 to 4096 for better advantage estimation
     # at 240Hz. Longer rollouts = smoother gradient signal for high-frequency control.
     # batch_size raised proportionally to maintain ~16 mini-batches per update.
+    # ADDED: ent_coef=0.01 to encourage early exploration.
     # ========================================================================
     if args.stage > 0:
         prev_model_path = os.path.join(model_dir, prev_run_name, "best_model.zip")
@@ -162,6 +163,7 @@ if __name__ == "__main__":
                 n_steps=4096,
                 batch_size=256,
                 gamma=0.9995,
+                ent_coef=0.01,
                 policy_kwargs=policy_kwargs
             )
     else:
@@ -173,6 +175,7 @@ if __name__ == "__main__":
             n_steps=4096,
             batch_size=256,
             gamma=0.9995,
+            ent_coef=0.01,
             policy_kwargs=policy_kwargs
         )
     

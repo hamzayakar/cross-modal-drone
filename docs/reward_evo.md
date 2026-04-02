@@ -488,3 +488,36 @@ for i in range(self.num_rays):
     end = [start[0] + dx*self.lidar_range, start[1] + dy*self.lidar_range, start[2]]
 ```
 
+## Stage 0.16: The Final Polish (URDF Alignment, Smoothness Scaling & Entropy)
+
+**Behavior:** The agent continued to exhibit extreme "Beyblade" spinning and struggled to establish early stable flight, despite previous physical corrections. The root causes were a combination of inverted physics commands, hyper-sensitive penalty calculations, and an overly strict target bounding box.
+
+**Bug 1 (Physics): The URDF Motor Mixing Mismatch.** While the PD controller correctly calculated required torques, the X-configuration motor mixing matrix incorrectly mapped them to the drone's physical layout. Based on PyBullet's coordinate system and the specific `cf2x.urdf` offsets, Motor 1 (Front-Left) and Motor 3 (Rear-Right) were receiving inverted Pitch and Yaw commands. The PD controller was effectively commanding the drone to crash when attempting to correct errors.
+*Fix:* Completely rewrote the motor mixing matrix to perfectly align with the `cf2x.urdf` coordinate topology, ensuring correct sign application for all torques across all four rotors.
+
+**Bug 2 (Reward Math): Smoothness Penalty Over-scaling.**
+The jerk penalty was calculated using `np.sum(np.square(action - self.prev_action))`. Because continuous actions operate in a high-frequency (240Hz) 4-dimensional space, the raw sum produced a massive penalty per step (often overshadowing the `alive_bonus`). This paralyzed the agent, as moving any motor was mathematically worse than falling to the floor.
+*Fix:* Changed the calculation to `np.mean` to normalize the penalty, and additionally softened the PD controller gains (`Kp_ang` from 8.0 to 5.0) to prevent the motors from clamping to their maximum limits during early random exploration.
+
+**Bug 3 (Environment Geometry): The Pixel-Perfect Collection Radius.**
+The $0.4 \text{ m}$ collection radius was too strict for a $36 \text{ cm}$ drone. The drone's physical body consumed $18 \text{ cm}$ of this radius, leaving a mere $22 \text{ cm}$ margin of error, making target collection a nearly impossible needle-threading task.
+*Fix:* Expanded the collection radius to $0.6 \text{ m}$, providing a physically realistic "rotor wash" hit-box that rewards the agent for aggressive near-miss flybys.
+
+**Bug 4 (RL Math): Entropy Collapse.**
+PPO defaults to an entropy coefficient of $0.0$, which can lead to premature deterministic policies (e.g., spinning continuously) before the agent discovers the sparse rewards.
+*Fix:* Added `ent_coef=0.01` to the PPO configuration to actively encourage early-stage exploration.
+
+**Code Changes:**
+```python
+# CHANGED in drone_sim.py: Corrected X-Configuration Matrix
+f0 = base_f - tau_pitch + tau_roll - tau_yaw  # Motor 0 (Front-Right)
+f1 = base_f - tau_pitch - tau_roll + tau_yaw  # Motor 1 (Front-Left)
+f2 = base_f + tau_pitch - tau_roll - tau_yaw  # Motor 2 (Rear-Left)
+f3 = base_f + tau_pitch + tau_roll + tau_yaw  # Motor 3 (Rear-Right)
+
+# CHANGED in drone_sim.py: Smoothness Penalty using np.mean
+action_diff = np.mean(np.square(action - self.prev_action))
+
+# CHANGED in scripts/train_teacher.py: Added Entropy
+model = PPO(..., ent_coef=0.01)
+```
