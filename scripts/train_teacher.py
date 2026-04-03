@@ -149,35 +149,39 @@ if __name__ == "__main__":
     # batch_size raised proportionally to maintain ~16 mini-batches per update.
     # ADDED: ent_coef=0.01 to encourage early exploration.
     # ========================================================================
-    if args.stage > 0:
+    policy_kwargs = dict(net_arch=dict(pi=[256, 256], vf=[256, 256]))
+    ppo_kwargs = dict(
+        verbose=1, tensorboard_log=log_dir,
+        learning_rate=0.0003,
+        n_steps=4096,
+        batch_size=256,
+        gamma=0.9995,
+        ent_coef=0.05,   # Raised from 0.01 — previous run collapsed to entropy -8
+                          # at 1.8M steps and regressed. More exploration needed to
+                          # break out of the coin-1-only local optimum.
+        policy_kwargs=policy_kwargs
+    )
+
+    # Check for a resumable best_model in the current stage directory first.
+    # This allows restarting a stuck run while preserving learned flight skills.
+    current_best_path = os.path.join(stage_model_dir, "best_model.zip")
+
+    if os.path.exists(current_best_path):
+        print(f"Resuming from current stage best model: {current_best_path}")
+        model = PPO.load(current_best_path, env=env, tensorboard_log=log_dir,
+                         ent_coef=0.05)
+    elif args.stage > 0:
         prev_model_path = os.path.join(model_dir, prev_run_name, "best_model.zip")
         if os.path.exists(prev_model_path):
             print(f"Found previous brain ({prev_run_name})! Loading weights...")
-            model = PPO.load(prev_model_path, env=env, tensorboard_log=log_dir)
+            model = PPO.load(prev_model_path, env=env, tensorboard_log=log_dir,
+                             ent_coef=0.05)
         else:
             print("WARNING: Previous model not found! Starting from scratch.")
-            policy_kwargs = dict(net_arch=dict(pi=[256, 256], vf=[256, 256]))
-            model = PPO(
-                "MlpPolicy", env, verbose=1, tensorboard_log=log_dir,
-                learning_rate=0.0003,
-                n_steps=4096,
-                batch_size=256,
-                gamma=0.9995,
-                ent_coef=0.01,
-                policy_kwargs=policy_kwargs
-            )
+            model = PPO("MlpPolicy", env, **ppo_kwargs)
     else:
         print("Stage 0: Creating a fresh, high-capacity brain from scratch...")
-        policy_kwargs = dict(net_arch=dict(pi=[256, 256], vf=[256, 256]))
-        model = PPO(
-            "MlpPolicy", env, verbose=1, tensorboard_log=log_dir,
-            learning_rate=0.0003,
-            n_steps=4096,
-            batch_size=256,
-            gamma=0.9995,
-            ent_coef=0.01,
-            policy_kwargs=policy_kwargs
-        )
+        model = PPO("MlpPolicy", env, **ppo_kwargs)
     
     print("Training is live! Monitor progress via TensorBoard.")
     model.learn(

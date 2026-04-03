@@ -35,7 +35,7 @@ rewards:
   alive_bonus: 0.02
   distance_penalty_multiplier: 0.02
   velocity_penalty_multiplier: 0.003
-  smoothness_penalty_multiplier: 0.05
+  smoothness_penalty_multiplier: 0.02
   lidar_penalty_multiplier: 0.5
   coin_collection_reward: 300.0
   success_bonus: 1000.0

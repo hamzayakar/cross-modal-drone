@@ -165,18 +165,34 @@ class RoomDroneEnv(gym.Env):
         self._build_closed_room()
         self._spawn_obstacles()
         
+        # Spawn coins first so we can check drone spawn position against them.
+        # Previously coins were spawned after the drone, making it impossible to
+        # detect instant-collection spawns before the first step().
+        self._spawn_coins_safely()
+
         # Symmetry Breaking: self.np_random is seeded by Gymnasium's reset(seed=)
-        start_x = self.np_random.uniform(-0.5, 0.5)
-        start_y = self.np_random.uniform(-0.5, 0.5)
+        # FIX: Resample drone spawn if it lands inside any coin's collection radius.
+        # Monte Carlo analysis showed ~4.5% of spawns place the drone within 0.6m
+        # of coin 1 at [1.0, 0.0, 2.0], causing an instant free collection on step 1
+        # with no learned behavior — a noisy false-positive reward signal.
         start_yaw = self.np_random.uniform(-math.pi, math.pi)
+        for _ in range(10):
+            start_x = self.np_random.uniform(-0.5, 0.5)
+            start_y = self.np_random.uniform(-0.5, 0.5)
+            too_close = any(
+                math.sqrt((start_x - g["pos"][0])**2 + (start_y - g["pos"][1])**2) < 0.6
+                for g in self.gold_data
+            )
+            if not too_close:
+                break
+
         start_pos = [start_x, start_y, 2.0]
         start_ori = p.getQuaternionFromEuler([0, 0, start_yaw])
-        
+
         urdf_path = os.path.join(os.path.dirname(__file__), "cf2x.urdf")
         self.drone_id = p.loadURDF(urdf_path, start_pos, baseOrientation=start_ori, globalScaling=4.0)
         p.changeDynamics(self.drone_id, -1, mass=1.0)
-        
-        self._spawn_coins_safely()
+
         return self._get_obs(), {}
 
     def _compute_lidar(self, drone_pos, ori):

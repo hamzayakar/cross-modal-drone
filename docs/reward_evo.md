@@ -663,3 +663,43 @@ obs = self._get_obs()                              # Agent receives noisy observ
 clean_lidar = self._compute_lidar(drone_pos, ori)  # Ground truth for the reward judge
 reward = compute_dense_reward(..., clean_lidar, ...)
 ```
+
+## Stage 0.21: Entropy Collapse & Spawn Contamination (Training Diagnostics)
+
+**Behavior:** After 2.94M steps (~10 hours), the policy plateaued and regressed. Mean eval reward peaked at −94 around 1.8M steps, then degraded back to −178 by 3M steps. Success rate remained 0% throughout all 294 evaluations. Entropy collapsed to −8, indicating a fully deterministic policy stuck in a local optimum. The agent occasionally collected coin 1 and rarely coin 2, but never proceeded to coins 3 or 4.
+
+**Root Cause Analysis:**
+
+**Bug 1 — Entropy Collapse (`ent_coef` Too Low):**
+`ent_coef=0.01` (added in Stage 0.16) was insufficient for this task's complexity. By 1.8M steps the policy converged prematurely to a deterministic coin-1-collection strategy, losing the ability to explore post-collection navigation. Gradient updates continued but pushed the policy toward marginal local improvements that destroyed other capabilities, explaining the regression from −94 back to −178.
+
+**Bug 2 — Spawn Inside Collection Radius (~4.5% of Episodes):**
+`reset()` spawned the drone before calling `_spawn_coins_safely()`, making it impossible to check the drone's position against coin locations. Monte Carlo analysis (N=1,000,000) confirmed ~4.5% of episodes place the drone within 0.6m of coin 1 at `[1.0, 0.0, 2.0]`, causing an instant free +300 reward on the very first `step()` with no learned behavior. This injected noisy false-positive signals into the training data — the policy received coin-collection reward without the observation sequence that led to it.
+
+**Fix 1 (RL Hyperparameter):** Raised `ent_coef` from 0.01 to 0.05. Resume from best_model.zip (−94 reward checkpoint) to preserve learned flight skills while injecting renewed exploration pressure.
+
+**Fix 2 (Environment):** Reversed spawn order in `reset()` — coins are now spawned first, then the drone position is sampled and rejected if within 0.6m of any coin (up to 10 retries). `smoothness_penalty_multiplier` also reduced from 0.05 to 0.02 to reduce over-constraint on early-stage exploration.
+
+**Fix 3 (Watcher Notebooks):** `04_watch_agent_best.ipynb` and `05_watch_agent_live.ipynb` had a double-reset visual artifact. `DummyVecEnv` auto-resets on `done=True` (first world rebuild), then the notebook's `env.reset()` triggered a second `resetSimulation()` immediately after. Fixed by loading `VecNormalize` stats in-place via `cloudpickle` without calling `env.reset()`.
+
+**Code Changes:**
+```python
+# CHANGED in drone_sim.py reset(): Spawn coins before drone, check radius
+self._spawn_coins_safely()  # coins first
+for _ in range(10):
+    start_x = self.np_random.uniform(-0.5, 0.5)
+    start_y = self.np_random.uniform(-0.5, 0.5)
+    too_close = any(
+        math.sqrt((start_x - g["pos"][0])**2 + (start_y - g["pos"][1])**2) < 0.6
+        for g in self.gold_data
+    )
+    if not too_close:
+        break
+
+# CHANGED in scripts/train_teacher.py: ent_coef 0.01 → 0.05
+# ADDED: auto-resume from current stage best_model.zip
+ent_coef=0.05
+
+# CHANGED in configs/teacher_ppo.yaml
+# smoothness_penalty_multiplier: 0.05 → 0.02
+```
