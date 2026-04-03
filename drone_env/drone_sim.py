@@ -33,6 +33,13 @@ class RoomDroneEnv(gym.Env):
         self.reward_weights = reward_weights
         self.hover_only = hover_only
         self.num_fixed_coins = num_fixed_coins
+        # Virtual hover target: used as compass anchor + reward target in Stage 0.
+        # Ego-centric compass always points here; policy learns "minimize this vector."
+        # Same policy structure as nav stages (where target = nearest coin).
+        if hover_only and reward_weights and 'hover_target' in reward_weights:
+            self.hover_target = list(reward_weights['hover_target'])
+        else:
+            self.hover_target = [0.0, 0.0, 2.0]
         
         self.drone_id = None
         self.wall_ids = []
@@ -237,7 +244,13 @@ class RoomDroneEnv(gym.Env):
         local_ang_vel = rot_matrix.T.dot(angular_vel)
         
         # Compass: target relative position in Body Frame
-        if len(self.gold_data) > 0:
+        if self.hover_only:
+            # Compass points to virtual hover target [0, 0, 2.0] in body frame.
+            # Policy sees "target is X meters left, Y meters ahead, Z meters up" —
+            # same ego-centric structure as nav stages where target = nearest coin.
+            global_relative_pos = np.array(self.hover_target) - np.array(drone_pos)
+            local_relative_pos = rot_matrix.T.dot(global_relative_pos)
+        elif len(self.gold_data) > 0:
             distances = [math.sqrt(sum((d - val)**2 for d, val in zip(drone_pos, g["pos"])))
                          for g in self.gold_data]
             closest_idx = np.argmin(distances)
@@ -467,10 +480,8 @@ class RoomDroneEnv(gym.Env):
 
         # Compute Reward
         if self.hover_only:
-            # Hover stage: stability reward only. current_pitch/roll/local_ang_vel
-            # are already computed above from the post-step physics state.
             reward = compute_hover_reward(
-                drone_pos, drone_vel, current_pitch, current_roll,
+                drone_pos, self.hover_target, drone_vel, current_pitch, current_roll,
                 local_ang_vel, is_collision, self.reward_weights
             )
         else:

@@ -1,13 +1,14 @@
 # ==========================================
 # CURRICULUM STAGES
 # ==========================================
-# Stage 0: Hover — learn to survive, hold altitude, minimize movement.
-#          No coins. Foundation for all future stages.
-# Stage 1: Scout — single fixed coin 1m away. Learn basic directional thrust.
-# Stage 2: Navigator — 4 fixed coins, increasing distance. Learn sequential nav.
-# Stage 3: Hunter — 10-18 random coins, empty room. Generalize navigation.
-# Stage 4: Pioneer — 20 fixed obstacles + random coins. Learn obstacle avoidance.
-# Stage 5: Apex — 20 random obstacles + random coins. Full mastery.
+# Stage 0: Hover      — survive + hold Z=2.0. No coins. Flight foundation.
+# Stage 1: Scout      — 1 fixed coin 1m away. Basic compass following.
+# Stage 2: Navigator  — 4 fixed coins. Sequential navigation.
+# Stage 3: Hunter     — 10-18 random coins, no obstacles. Generalize search.
+# Stage 4: Pathfinder — 20 fixed obstacles + 4 fixed coins. Learn obstacle
+#                       avoidance with familiar coin locations (one new skill).
+# Stage 5: Pioneer    — 20 fixed obstacles + random coins. Combine avoidance+search.
+# Stage 6: Apex       — 20 random obstacles + random coins. Full mastery.
 # ==========================================
 stages:
   stage_0:
@@ -16,7 +17,7 @@ stages:
     randomize_coins: False
     hover_only: True
     num_fixed_coins: 0
-    reward_threshold: 800.0
+    reward_threshold: 500.0
     run_name: "Stage_0_Hover"
 
   stage_1:
@@ -49,32 +50,44 @@ stages:
   stage_4:
     num_obstacles: 20
     randomize_obstacles: False
+    randomize_coins: False
+    hover_only: False
+    num_fixed_coins: 4
+    reward_threshold: 1500.0
+    run_name: "Stage_4_Pathfinder"
+
+  stage_5:
+    num_obstacles: 20
+    randomize_obstacles: False
     randomize_coins: True
     hover_only: False
     num_fixed_coins: 4
     reward_threshold: 2000.0
-    run_name: "Stage_4_Pioneer"
+    run_name: "Stage_5_Pioneer"
 
-  stage_5:
+  stage_6:
     num_obstacles: 20
     randomize_obstacles: True
     randomize_coins: True
     hover_only: False
     num_fixed_coins: 4
     reward_threshold: 2000.0
-    run_name: "Stage_5_Apex"
+    run_name: "Stage_6_Apex"
 
 # ==========================================
 # HOVER REWARDS (Stage 0 only)
-# Goal: survive + hold Z=2.0 + minimize movement.
-# No coins, no success bonus. Pure stability learning.
+# Goal: reach and hold hover_target [0, 0, 2.0].
+# Compass in obs always points to hover_target — same ego-centric structure
+# as nav stages (where target = nearest coin). Policy learns one skill:
+# "minimize the compass vector." In hover target is fixed; in nav it shifts
+# as coins are collected. No velocity_penalty: physics drag + tilt penalty
+# provide natural damping without biasing Stage 1+ toward slow movement.
 # ==========================================
 hover_rewards:
   alive_bonus: 0.1
-  altitude_target: 2.0
-  altitude_penalty: 1.0
+  hover_target: [0.0, 0.0, 2.0]
+  distance_penalty: 0.5
   tilt_penalty: 0.5
-  velocity_penalty: 0.1
   angular_velocity_penalty: 0.05
   collision_penalty: 50.0
 

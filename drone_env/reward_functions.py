@@ -1,25 +1,31 @@
 import numpy as np
 
 
-def compute_hover_reward(drone_pos, drone_vel, body_pitch, body_roll, local_ang_vel, is_collision, reward_weights):
+def compute_hover_reward(drone_pos, target_pos, drone_vel, body_pitch, body_roll, local_ang_vel, is_collision, reward_weights):
     """
     Stage 0 (Hover) reward. No coins, no navigation.
-    Goal: survive + hold Z=altitude_target + minimize tilt and movement.
-    This primes the policy for navigation stages — the agent learns
-    'small actions near [0,0,0,-0.02] = stable' before dealing with coins.
+    Goal: reach and hold the virtual hover target [0, 0, 2.0].
+
+    Design principle: compass in obs always points to target_pos (same structure as
+    nav stages where target = nearest coin). Policy learns one skill: minimize the
+    compass vector. In hover the target is fixed; in nav it moves as coins are collected.
+
+    Reward = alive_bonus - distance_penalty * dist_3D - tilt_penalty * (pitch²+roll²)
+             - angular_velocity_penalty * |ang_vel| - collision_penalty (if any)
+
+    No velocity_penalty: physics drag (-0.5*v) and tilt penalty provide natural
+    damping. Explicit velocity penalty would bias the transferred policy toward
+    slow movement, hurting coin-collection speed in Stage 1+.
     """
     reward = 0.0
 
     reward += reward_weights['alive_bonus']
 
-    altitude_error = abs(drone_pos[2] - reward_weights['altitude_target'])
-    reward -= reward_weights['altitude_penalty'] * altitude_error
+    dist = np.linalg.norm(np.array(drone_pos) - np.array(target_pos))
+    reward -= reward_weights['distance_penalty'] * dist
 
     tilt = body_pitch ** 2 + body_roll ** 2
     reward -= reward_weights['tilt_penalty'] * tilt
-
-    velocity_magnitude = np.linalg.norm(drone_vel)
-    reward -= reward_weights['velocity_penalty'] * velocity_magnitude
 
     ang_vel_magnitude = np.linalg.norm(local_ang_vel)
     reward -= reward_weights['angular_velocity_penalty'] * ang_vel_magnitude

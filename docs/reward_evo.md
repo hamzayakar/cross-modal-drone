@@ -709,6 +709,7 @@ batch_size=512
 
 # CHANGED in configs/teacher_ppo.yaml
 # smoothness_penalty_multiplier: 0.05 → 0.02
+```
 
 ---
 
@@ -801,4 +802,88 @@ Cross-referenced against ETH Zurich and surveyed papers:
 # - StopTrainingOnRewardThreshold: hardcoded 1600 → per-stage REWARD_THRESHOLD from YAML
 # - make_env / eval_env_raw: hover_only and num_fixed_coins passed through
 ```
+
+---
+
+## Stage 0.23 — Hover Compass Fix: Unified Target Architecture
+
+**Date:** 2026-04-03
+
+**Trigger:** Stage 0.22's hover reward only targeted Z=2.0 (altitude). The ego-centric compass in the observation was hardcoded to `[0, 0, 0]` when no coins existed (`hover_only=True`). This created two problems:
+
+1. **Obs/reward inconsistency:** Reward penalized distance from Z=2.0, but the compass (indices 11-13 in 50D obs) never pointed anywhere — the policy had no directional signal for x/y positioning.
+2. **Transfer gap:** In hover, policy learned "compass=[0,0,0] → hover in place." In Stage 1, compass suddenly becomes a real non-zero vector pointing to a coin. The policy had never seen a non-zero compass during hover training, so the transferred skill didn't include x/y positional control.
+
+---
+
+### Root Cause — Obs/Reward Architecture Mismatch
+
+ETH Zurich and principled curriculum designs treat hover as navigation with a fixed target. The key insight:
+
+> Policy learns one skill: minimize the compass vector. In hover, target is `[0, 0, 2.0]` (fixed). In nav, target shifts as coins are collected. Same 50D obs, same network, same behavior — only the target location changes.
+
+Our Stage 0.22 hover used `local_relative_pos = [0, 0, 0]` (no target), forcing the policy to learn a fundamentally different behavior than navigation. The hover→nav transfer would have required the policy to learn x/y positioning from scratch in Stage 1.
+
+---
+
+### Fix — Virtual Hover Target as Real Compass Anchor
+
+**`drone_sim.py / _get_obs()`:** When `hover_only=True`, compass now computes real ego-centric vector to `hover_target=[0,0,2.0]`:
+```python
+if self.hover_only:
+    global_relative_pos = np.array(self.hover_target) - np.array(drone_pos)
+    local_relative_pos = rot_matrix.T.dot(global_relative_pos)
 ```
+
+**`reward_functions.py / compute_hover_reward()`:** Reward now penalizes 3D distance to target (not just altitude error). `velocity_penalty` removed — physics drag + tilt penalty provide natural damping without biasing Stage 1+ toward slow movement:
+```python
+dist = np.linalg.norm(np.array(drone_pos) - np.array(target_pos))
+reward = alive_bonus - distance_penalty * dist - tilt_penalty * (pitch²+roll²) - ang_vel_penalty * |ang_vel|
+```
+
+**`configs/teacher_ppo.yaml / hover_rewards`:**
+```yaml
+hover_rewards:
+  alive_bonus: 0.1
+  hover_target: [0.0, 0.0, 2.0]
+  distance_penalty: 0.5          # replaces altitude_penalty (now 3D)
+  tilt_penalty: 0.5
+  angular_velocity_penalty: 0.05
+  collision_penalty: 50.0
+  # removed: altitude_target, altitude_penalty, velocity_penalty
+```
+
+Stage 0 `reward_threshold`: 800 → 500. Breakeven at dist=0.2m; threshold 500 requires dist < 0.13m average.
+
+---
+
+### Reward Numerics
+
+```
+alive_bonus=0.1, distance_penalty=0.5:
+
+Perfect hover (dist=0, tilt=0):  +0.1/step → 14400 steps = +1440 (theoretical max)
+Breakeven (0/step):               dist = 0.2m
+Threshold 500:                    +0.035/step → dist < 0.13m average
+Threshold 800 (old):              +0.056/step → dist < 0.09m (too strict for early training)
+```
+
+---
+
+### Why velocity_penalty Was Removed from Hover
+
+Explicit velocity penalty biases the transferred policy toward slow movement. Stage 1 needs the drone to rush toward coins. Natural damping from physics drag (`-0.5 * v`) and tilt penalty makes the explicit velocity term redundant.
+
+---
+
+### Notebook Updates (03, 04, 05)
+
+All three watcher notebooks updated with:
+- **Cyan fading trajectory trail:** `p.addUserDebugLine(..., [0, 0.7, 1.0], lifeTime=4.0)` every 12 steps (20 Hz)
+- **`Dist:` field in HUD:** Distance to hover_target (hover) or nearest coin (nav)
+- **`T:` field in HUD:** Episode duration in seconds (`ep_steps / 240.0`)
+- **Notebook 03 (`watch_agent_frozen`):** Completely rewritten — was using stale `config['rewards']` key and missing all visualization features
+
+---
+
+**Training run terminated at ~2.36M steps** (eval/mean_ep_length reached 8823, eval/mean_reward -1022) before the compass fix was discovered. Logs archived to `logs/legacy/5_before_virtual_target/`. New training starts from scratch with corrected architecture.
