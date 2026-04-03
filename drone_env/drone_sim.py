@@ -6,10 +6,11 @@ import numpy as np
 import math
 import os
 
-from .reward_functions import compute_dense_reward
+from .reward_functions import compute_dense_reward, compute_hover_reward
 
 class RoomDroneEnv(gym.Env):
-    def __init__(self, gui=False, num_obstacles=0, randomize_obstacles=False, randomize_coins=False, reward_weights=None):
+    def __init__(self, gui=False, num_obstacles=0, randomize_obstacles=False, randomize_coins=False,
+                 reward_weights=None, hover_only=False, num_fixed_coins=4):
         super().__init__()
         
         self.client = p.connect(p.GUI if gui else p.DIRECT)
@@ -30,6 +31,8 @@ class RoomDroneEnv(gym.Env):
         self.randomize_obstacles = randomize_obstacles
         self.randomize_coins = randomize_coins
         self.reward_weights = reward_weights
+        self.hover_only = hover_only
+        self.num_fixed_coins = num_fixed_coins
         
         self.drone_id = None
         self.wall_ids = []
@@ -119,7 +122,7 @@ class RoomDroneEnv(gym.Env):
                 [4.0, 4.0, 2.0],
                 [-4.0, -4.0, 2.0]
             ]
-            for pos in fixed_positions:
+            for pos in fixed_positions[:self.num_fixed_coins]:
                 vs = p.createVisualShape(p.GEOM_SPHERE, radius=0.12, rgbaColor=[1, 0.84, 0, 1])
                 gid = p.createMultiBody(baseMass=0, baseVisualShapeIndex=vs, basePosition=pos)
                 self.gold_data.append({"id": gid, "pos": pos})
@@ -165,10 +168,10 @@ class RoomDroneEnv(gym.Env):
         self._build_closed_room()
         self._spawn_obstacles()
         
-        # Spawn coins first so we can check drone spawn position against them.
-        # Previously coins were spawned after the drone, making it impossible to
-        # detect instant-collection spawns before the first step().
-        self._spawn_coins_safely()
+        # Hover stage has no coins. For navigation stages, spawn coins first
+        # so drone spawn position can be validated against them.
+        if not self.hover_only:
+            self._spawn_coins_safely()
 
         # Symmetry Breaking: self.np_random is seeded by Gymnasium's reset(seed=)
         # FIX: Resample drone spawn if it lands inside any coin's collection radius.
@@ -414,22 +417,22 @@ class RoomDroneEnv(gym.Env):
         coin_collected  = False
         current_distance = 0.0
 
-        # Coin Collection Logic
-        if len(self.gold_data) > 0:
-            distances = [math.sqrt(sum((d - val)**2 for d, val in zip(drone_pos, g["pos"])))
-                         for g in self.gold_data]
-            closest_idx = np.argmin(distances)
-            current_distance = distances[closest_idx]
-            
-            # Expanded collection radius to 0.6m
-            if current_distance < 0.6:
-                p.removeBody(self.gold_data[closest_idx]["id"])
-                self.gold_data.pop(closest_idx)
-                coin_collected = True
+        # Coin Collection Logic (navigation stages only)
+        if not self.hover_only:
+            if len(self.gold_data) > 0:
+                distances = [math.sqrt(sum((d - val)**2 for d, val in zip(drone_pos, g["pos"])))
+                             for g in self.gold_data]
+                closest_idx = np.argmin(distances)
+                current_distance = distances[closest_idx]
 
-        if len(self.gold_data) == 0:
-            is_success = True
-            terminated = True
+                if current_distance < 0.6:
+                    p.removeBody(self.gold_data[closest_idx]["id"])
+                    self.gold_data.pop(closest_idx)
+                    coin_collected = True
+
+            if len(self.gold_data) == 0:
+                is_success = True
+                terminated = True
 
         # Death Checks
         hx, hy, hz = self.room_bounds
@@ -460,23 +463,28 @@ class RoomDroneEnv(gym.Env):
 
         # Construct Observation
         obs = self._get_obs()
-        # FIX (Stage 0.20): Use clean (pre-noise) LiDAR for reward computation.
-        # _get_obs() injects Gaussian noise into the full observation vector.
-        # Extracting LiDAR from that noisy array and passing it to the reward function
-        # means the "judge" evaluates hallucinated proximity readings — a lidar fraction
-        # of 0.105 (safe) could become 0.095 after noise and incorrectly trigger a penalty.
-        # The agent must perceive the world through noisy sensors, but reward must reflect
-        # ground truth. drone_pos and ori are already available from the post-step re-fetch.
-        clean_lidar = self._compute_lidar(drone_pos, ori)
         info['is_success'] = is_success
 
         # Compute Reward
-        reward = compute_dense_reward(
-            drone_pos, drone_vel, action, current_distance,
-            is_collision, is_success, clean_lidar, coin_collected,
-            action_diff,
-            reward_weights=self.reward_weights
-        )
+        if self.hover_only:
+            # Hover stage: stability reward only. current_pitch/roll/local_ang_vel
+            # are already computed above from the post-step physics state.
+            reward = compute_hover_reward(
+                drone_pos, drone_vel, current_pitch, current_roll,
+                local_ang_vel, is_collision, self.reward_weights
+            )
+        else:
+            # FIX (Stage 0.20): Use clean (pre-noise) LiDAR for reward computation.
+            # _get_obs() injects Gaussian noise into the full observation vector.
+            # Extracting LiDAR from that noisy array passes hallucinated proximity
+            # readings to the reward judge. Ground truth LiDAR is recomputed here.
+            clean_lidar = self._compute_lidar(drone_pos, ori)
+            reward = compute_dense_reward(
+                drone_pos, drone_vel, action, current_distance,
+                is_collision, is_success, clean_lidar, coin_collected,
+                action_diff,
+                reward_weights=self.reward_weights
+            )
 
         return obs, reward, terminated, truncated, info
 

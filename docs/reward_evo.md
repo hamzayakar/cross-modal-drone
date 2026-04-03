@@ -709,4 +709,96 @@ batch_size=512
 
 # CHANGED in configs/teacher_ppo.yaml
 # smoothness_penalty_multiplier: 0.05 → 0.02
+
+---
+
+## Stage 0.22 — Curriculum Reboot: Hover Foundation + Reward Economy Fix
+
+**Date:** 2026-04-03
+
+**Trigger:** Despite 5M+ training steps, ep_len_mean plateaued at ~1350 steps (5.6s out of 60s max). `ent_coef=0.05` caused immediate entropy explosion to −18 (policy → pure noise). Root cause analysis and cross-referencing with ETH Zurich gym-pybullet-drones revealed two fundamental architectural problems.
+
+---
+
+### Problem 1 — No Hover Foundation (Missing Pre-Training Stage)
+
+The agent was asked to simultaneously learn attitude stabilization AND coin navigation from a random initialization. With `log_std_init=0.0` (default, std=1.0), the random policy issues ±30° attitude commands, the PD controller executes them faithfully, and the drone flips and dies in ~5.6 seconds before accumulating any positive reward signal. No coin is ever seen → no gradient toward navigation → policy never improves.
+
+ETH Zurich and all surveyed navigation repos train hover **first** (separate stage, zero coin reward), then layer navigation on top of learned flight mechanics.
+
+**Fix:** Added `Stage_0_Hover` as the curriculum entry point. No coins, no navigation. Reward = altitude stability + tilt minimization + alive bonus. Same 50D observation space throughout (LiDAR = 1.0 + noise in hover, network learns to weight it near zero; when obstacles appear in Stage 4+, LiDAR becomes meaningful without obs space change). Transfer learning works because same network, same obs/action space — only reward differs.
+
+New curriculum:
+```
+Stage 0: Hover         (survive + hold Z=2.0)
+Stage 1: Scout         (1 fixed coin, 1m away)
+Stage 2: Navigator     (4 fixed coins)
+Stage 3: Hunter        (10-18 random coins)
+Stage 4: Pioneer       (20 fixed obstacles + random coins)
+Stage 5: Apex          (20 random obstacles + random coins)
+```
+
+**Fix:** `log_std_init=-1.2` (std≈0.3). Initial effective tilt = ±9° instead of ±30°. Drone survives random policy → accumulates reward signal → gradient can propagate.
+
+---
+
+### Problem 2 — Velocity Penalty Kills Navigation (Reward Economy Bug)
+
+Per-step reward change when flying at velocity `v` toward a coin:
+
+```
+distance_penalty improvement : +0.02 × (v / 240Hz) = +0.000083v  per step
+velocity_penalty cost         : −0.003 × v          = −0.003000v  per step
+────────────────────────────────────────────────────────────────────────────
+net gradient per step         :                        −0.002917v  (negative)
+```
+
+**Moving toward a coin at any speed gives a negative per-step reward gradient.** The 36× imbalance between velocity_penalty and the per-step distance improvement means the immediate policy gradient says "hover, don't move." Only the long-horizon value function (coin +300 many steps ahead) counteracts this, making credit assignment extremely hard — especially early in training when the value function is unreliable.
+
+This explains why the agent learned to hover in place at ~1m from coin 1: the alive_bonus and distance_penalty balanced at 1m (Golden Ratio), velocity_penalty discouraged movement, and the coin was never close enough to collect by random drift.
+
+**Fix:** `velocity_penalty_multiplier: 0.003 → 0.0` in `nav_rewards`. Hover stage retains its own velocity damping (separate `hover_rewards` section). Distance penalty alone provides sufficient navigation gradient: getting closer = less penalty per step.
+
+---
+
+### Problem 3 — ent_coef Instability
+
+`ent_coef=0.01` caused slow entropy collapse. `ent_coef=0.05` caused immediate entropy explosion (−18 in 120K steps). The right value is near SB3 default (0.0). Set to `0.005` as a minimal safety margin against collapse.
+
+---
+
+### gamma and batch_size — Confirmed Correct
+
+Cross-referenced against ETH Zurich and surveyed papers:
+- Papers use `gamma=0.99` at 50Hz → effective horizon ~2s. At our 240Hz, `gamma=0.99` → horizon 0.42s (completely myopic, coin 5s away invisible). `gamma=0.9995` → horizon 8.3s. **Correct for 240Hz.**
+- Papers use `batch_size=64` with single env (2048 transitions, 32 mini-batches). We use `batch_size=512` with N_ENVS=4 (16384 transitions, 32 mini-batches). **Same ratio. Correct.**
+
+---
+
+**Code Changes:**
+```python
+# NEW: drone_env/drone_sim.py
+# - hover_only=False, num_fixed_coins=4 parameters added to __init__
+# - _spawn_coins_safely: respects num_fixed_coins limit for staged coin introduction
+# - reset(): coins not spawned when hover_only=True
+# - step(): hover_only branch skips coin/success logic; uses compute_hover_reward()
+
+# NEW: drone_env/reward_functions.py
+# - compute_hover_reward() added: alive + altitude_error + tilt + velocity + ang_vel + collision
+# - compute_dense_reward() unchanged except smoothness fallback already fixed
+
+# NEW: configs/teacher_ppo.yaml
+# - Restructured: 6 stages (Hover→Scout→Navigator→Hunter→Pioneer→Apex)
+# - hover_rewards and nav_rewards separate sections
+# - velocity_penalty_multiplier: 0.003 → 0.0 in nav_rewards
+# - reward_threshold per stage (Hover:800, Scout:600, Navigator:1500, ...)
+# - num_fixed_coins per stage for gradual coin introduction
+
+# CHANGED: scripts/train_teacher.py
+# - policy_kwargs: log_std_init=-1.2 added (std=0.3, prevents crash-on-spawn)
+# - ent_coef: 0.05 → 0.005
+# - reward_weights: reads hover_rewards or nav_rewards based on hover_only flag
+# - StopTrainingOnRewardThreshold: hardcoded 1600 → per-stage REWARD_THRESHOLD from YAML
+# - make_env / eval_env_raw: hover_only and num_fixed_coins passed through
+```
 ```

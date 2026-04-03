@@ -63,12 +63,16 @@ if __name__ == "__main__":
         sys.exit()
 
     stage_config = config['stages'][stage_key]
-    reward_weights = config['rewards'] 
+    HOVER_ONLY = stage_config.get('hover_only', False)
+    NUM_FIXED_COINS = stage_config.get('num_fixed_coins', 4)
+    REWARD_THRESHOLD = stage_config.get('reward_threshold', 1600.0)
+    reward_weights = config['hover_rewards'] if HOVER_ONLY else config['nav_rewards']
     
     NUM_OBS = stage_config['num_obstacles']
     RAND_OBS = stage_config['randomize_obstacles']
     RAND_COINS = stage_config['randomize_coins']
     RUN_NAME = stage_config['run_name']
+
 
     print(f"[{RUN_NAME}] Training Initialized (GUI Disabled for speed)...")
 
@@ -99,14 +103,17 @@ if __name__ == "__main__":
             env = RoomDroneEnv(gui=False, num_obstacles=NUM_OBS,
                                randomize_obstacles=RAND_OBS,
                                randomize_coins=RAND_COINS,
-                               reward_weights=reward_weights)
-            # Only rank 0 logs to monitor.csv to avoid file corruption
+                               reward_weights=reward_weights,
+                               hover_only=HOVER_ONLY,
+                               num_fixed_coins=NUM_FIXED_COINS)
             return Monitor(env, log_dir if rank == 0 else None)
         return _init
 
     env_vec = SubprocVecEnv([make_env(i) for i in range(N_ENVS)])
 
-    eval_env_raw = RoomDroneEnv(gui=False, num_obstacles=NUM_OBS, randomize_obstacles=RAND_OBS, randomize_coins=RAND_COINS, reward_weights=reward_weights)
+    eval_env_raw = RoomDroneEnv(gui=False, num_obstacles=NUM_OBS, randomize_obstacles=RAND_OBS,
+                                randomize_coins=RAND_COINS, reward_weights=reward_weights,
+                                hover_only=HOVER_ONLY, num_fixed_coins=NUM_FIXED_COINS)
     eval_env_mon = Monitor(eval_env_raw)
     eval_env_vec = DummyVecEnv([lambda e=eval_env_mon: e])
     
@@ -128,14 +135,23 @@ if __name__ == "__main__":
     # ent_coef raised from 0.01 to 0.05: previous run collapsed to entropy -8 at 1.8M
     # steps and regressed. More exploration needed for multi-coin navigation.
     # ========================================================================
-    policy_kwargs = dict(net_arch=dict(pi=[256, 256], vf=[256, 256]))
+    # log_std_init=-1.2 → initial action std ≈ 0.3
+    # With ±30° max angles, initial effective tilt ≈ ±9°. This prevents the random
+    # policy from issuing extreme attitude commands that crash the drone before it
+    # can accumulate any positive reward signal. The std evolves freely from there.
+    # ent_coef=0.005: small entropy bonus to prevent deterministic collapse without
+    # the entropy explosion we saw at 0.05.
+    policy_kwargs = dict(
+        net_arch=dict(pi=[256, 256], vf=[256, 256]),
+        log_std_init=-1.2
+    )
     ppo_kwargs = dict(
         verbose=1, tensorboard_log=log_dir,
         learning_rate=0.0003,
-        n_steps=4096,   # per env — total rollout = 4096 × N_ENVS = 16384 transitions
-        batch_size=512, # raised from 256: 16384/512 = 32 mini-batches per update
+        n_steps=4096,
+        batch_size=512,
         gamma=0.9995,
-        ent_coef=0.05,
+        ent_coef=0.005,
         policy_kwargs=policy_kwargs
     )
 
@@ -159,7 +175,7 @@ if __name__ == "__main__":
             env.gamma = 0.9995
         else:
             env = VecNormalize(env_vec, norm_obs=True, norm_reward=True, clip_obs=10., gamma=0.9995)
-        model = PPO.load(current_best_path, env=env, tensorboard_log=log_dir, ent_coef=0.05)
+        model = PPO.load(current_best_path, env=env, tensorboard_log=log_dir, ent_coef=0.005)
 
     elif args.stage > 0 and os.path.exists(prev_vecnorm_path):
         print("Loading previous stage normalization statistics...")
@@ -170,7 +186,7 @@ if __name__ == "__main__":
         prev_model_path = os.path.join(model_dir, prev_run_name, "best_model.zip")
         if os.path.exists(prev_model_path):
             print(f"Found previous brain ({prev_run_name})! Loading weights...")
-            model = PPO.load(prev_model_path, env=env, tensorboard_log=log_dir, ent_coef=0.05)
+            model = PPO.load(prev_model_path, env=env, tensorboard_log=log_dir, ent_coef=0.005)
         else:
             print("WARNING: Previous model not found! Starting from scratch.")
             model = PPO("MlpPolicy", env, **ppo_kwargs)
@@ -187,7 +203,7 @@ if __name__ == "__main__":
 
     callback_on_best = CallbackList([
         SaveVecNormOnBestCallback(save_path=stage_model_dir, vec_env=env),
-        StopTrainingOnRewardThreshold(reward_threshold=1600.0, verbose=1)
+        StopTrainingOnRewardThreshold(reward_threshold=REWARD_THRESHOLD, verbose=1)
     ])
 
     eval_callback = EvalCallback(
