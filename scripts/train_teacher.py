@@ -119,53 +119,14 @@ if __name__ == "__main__":
         prev_run_name = config['stages'][prev_stage_key]['run_name']
         prev_vecnorm_path = os.path.join(model_dir, prev_run_name, "best_model_vecnormalize.pkl")
         
-    if args.stage > 0 and os.path.exists(prev_vecnorm_path):
-        print("Loading previous normalization statistics...")
-        env = VecNormalize.load(prev_vecnorm_path, env_vec)
-        env.training = True
-        env.norm_reward = True
-        env.gamma = 0.9995
-        
-        eval_env = VecNormalize.load(prev_vecnorm_path, eval_env_vec)
-        eval_env.training = False
-        eval_env.norm_reward = False
-        eval_env.gamma = 0.9995
-    else:
-        env = VecNormalize(env_vec, norm_obs=True, norm_reward=True, clip_obs=10., gamma=0.9995)
-        eval_env = VecNormalize(eval_env_vec, norm_obs=True, norm_reward=False, clip_obs=10., gamma=0.9995, training=False)
-    # ========================================================================
-
-    sync_callback = SyncEvalEnvCallback(train_env=env, eval_env=eval_env)
-    
-    callback_on_best = CallbackList([
-        SaveVecNormOnBestCallback(save_path=stage_model_dir, vec_env=env),
-        StopTrainingOnRewardThreshold(reward_threshold=1600.0, verbose=1)
-    ])
-    
-    # FIX: n_eval_episodes raised from default 5 to 20 for reliable evaluation signal.
-    # 5 episodes is too noisy for stochastic coin collection tasks.
-    eval_callback = EvalCallback(
-        eval_env, 
-        best_model_save_path=stage_model_dir, 
-        log_path=log_dir, 
-        eval_freq=10000, 
-        n_eval_episodes=20,
-        deterministic=True, 
-        render=False,
-        callback_on_new_best=callback_on_best
-    )
-                                 
-    latest_model_path = os.path.join(stage_model_dir, "latest_model")
-    save_latest_callback = SaveLatestCallback(save_path=latest_model_path, vec_env=env, save_freq=10000)
-    
-    callback_list = CallbackList([sync_callback, eval_callback, save_latest_callback])
-    
     # ========================================================================
     # PPO HYPERPARAMETERS
     # FIX: n_steps raised from default 2048 to 4096 for better advantage estimation
     # at 240Hz. Longer rollouts = smoother gradient signal for high-frequency control.
-    # batch_size raised proportionally to maintain ~16 mini-batches per update.
-    # ADDED: ent_coef=0.01 to encourage early exploration.
+    # batch_size raised from 256 to 512: total rollout = 4096×4 = 16384 transitions,
+    # 16384/512 = 32 mini-batches per update.
+    # ent_coef raised from 0.01 to 0.05: previous run collapsed to entropy -8 at 1.8M
+    # steps and regressed. More exploration needed for multi-coin navigation.
     # ========================================================================
     policy_kwargs = dict(net_arch=dict(pi=[256, 256], vf=[256, 256]))
     ppo_kwargs = dict(
@@ -174,41 +135,76 @@ if __name__ == "__main__":
         n_steps=4096,   # per env — total rollout = 4096 × N_ENVS = 16384 transitions
         batch_size=512, # raised from 256: 16384/512 = 32 mini-batches per update
         gamma=0.9995,
-        ent_coef=0.05,   # Raised from 0.01 — previous run collapsed to entropy -8
-                          # at 1.8M steps and regressed. More exploration needed to
-                          # break out of the coin-1-only local optimum.
+        ent_coef=0.05,
         policy_kwargs=policy_kwargs
     )
 
-    # Check for a resumable best_model in the current stage directory first.
-    # This allows restarting a stuck run while preserving learned flight skills.
-    current_best_path = os.path.join(stage_model_dir, "best_model.zip")
+    # ========================================================================
+    # ENV + MODEL SETUP
+    # CRITICAL: Callbacks must be created AFTER env and model are fully resolved.
+    # If env is reassigned during resume (VecNormalize.load returns a new object),
+    # callbacks created before the reassignment hold a stale reference and
+    # SyncEvalEnvCallback silently syncs wrong stats → eval normalization breaks
+    # → best_model never saves.
+    # ========================================================================
+    current_best_path  = os.path.join(stage_model_dir, "best_model.zip")
     current_best_vecnorm = os.path.join(stage_model_dir, "best_model_vecnormalize.pkl")
 
     if os.path.exists(current_best_path):
         print(f"Resuming from current stage best model: {current_best_path}")
-        # Reload VecNormalize stats from checkpoint so normalization is consistent
-        # with the saved policy. Without this, fresh zero-mean stats would make
-        # the loaded policy see completely different scaled observations.
         if os.path.exists(current_best_vecnorm):
             env = VecNormalize.load(current_best_vecnorm, env_vec)
             env.training = True
             env.norm_reward = True
             env.gamma = 0.9995
-        model = PPO.load(current_best_path, env=env, tensorboard_log=log_dir,
-                         ent_coef=0.05)
-    elif args.stage > 0:
+        else:
+            env = VecNormalize(env_vec, norm_obs=True, norm_reward=True, clip_obs=10., gamma=0.9995)
+        model = PPO.load(current_best_path, env=env, tensorboard_log=log_dir, ent_coef=0.05)
+
+    elif args.stage > 0 and os.path.exists(prev_vecnorm_path):
+        print("Loading previous stage normalization statistics...")
+        env = VecNormalize.load(prev_vecnorm_path, env_vec)
+        env.training = True
+        env.norm_reward = True
+        env.gamma = 0.9995
         prev_model_path = os.path.join(model_dir, prev_run_name, "best_model.zip")
         if os.path.exists(prev_model_path):
             print(f"Found previous brain ({prev_run_name})! Loading weights...")
-            model = PPO.load(prev_model_path, env=env, tensorboard_log=log_dir,
-                             ent_coef=0.05)
+            model = PPO.load(prev_model_path, env=env, tensorboard_log=log_dir, ent_coef=0.05)
         else:
             print("WARNING: Previous model not found! Starting from scratch.")
             model = PPO("MlpPolicy", env, **ppo_kwargs)
+
     else:
-        print("Stage 0: Creating a fresh, high-capacity brain from scratch...")
+        print("Starting from scratch...")
+        env = VecNormalize(env_vec, norm_obs=True, norm_reward=True, clip_obs=10., gamma=0.9995)
         model = PPO("MlpPolicy", env, **ppo_kwargs)
+
+    eval_env = VecNormalize(eval_env_vec, norm_obs=True, norm_reward=False, clip_obs=10., gamma=0.9995, training=False)
+
+    # Callbacks created here — after env is finalized — so all references are correct.
+    sync_callback = SyncEvalEnvCallback(train_env=env, eval_env=eval_env)
+
+    callback_on_best = CallbackList([
+        SaveVecNormOnBestCallback(save_path=stage_model_dir, vec_env=env),
+        StopTrainingOnRewardThreshold(reward_threshold=1600.0, verbose=1)
+    ])
+
+    eval_callback = EvalCallback(
+        eval_env,
+        best_model_save_path=stage_model_dir,
+        log_path=log_dir,
+        eval_freq=10000,
+        n_eval_episodes=20,
+        deterministic=True,
+        render=False,
+        callback_on_new_best=callback_on_best
+    )
+
+    latest_model_path = os.path.join(stage_model_dir, "latest_model")
+    save_latest_callback = SaveLatestCallback(save_path=latest_model_path, vec_env=env, save_freq=10000)
+
+    callback_list = CallbackList([sync_callback, eval_callback, save_latest_callback])
     
     print("Training is live! Monitor progress via TensorBoard.")
     model.learn(
