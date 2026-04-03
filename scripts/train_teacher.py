@@ -5,7 +5,7 @@ import yaml
 from stable_baselines3 import PPO
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import EvalCallback, StopTrainingOnRewardThreshold, BaseCallback, CallbackList
-from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from drone_env.drone_sim import RoomDroneEnv
@@ -71,23 +71,41 @@ if __name__ == "__main__":
     RUN_NAME = stage_config['run_name']
 
     print(f"[{RUN_NAME}] Training Initialized (GUI Disabled for speed)...")
-    
+
     log_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'logs', 'teacher_ppo'))
     model_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'models'))
-    
-    stage_model_dir = os.path.join(model_dir, RUN_NAME) 
+
+    stage_model_dir = os.path.join(model_dir, RUN_NAME)
     os.makedirs(log_dir, exist_ok=True)
     os.makedirs(stage_model_dir, exist_ok=True)
-    
+
     # ========================================================================
-    # ENVIRONMENT SETUP
-    # FIX: Lambda closure — capture variable explicitly to prevent all lambdas
-    # referencing the same object if n_envs is ever increased.
+    # ENVIRONMENT SETUP — SubprocVecEnv for parallel data collection
+    # N_ENVS=4 parallel environments: 4x faster rollout collection at minimal
+    # CPU overhead (PyBullet is CPU-only, RTX 3060 laptop handles 4 envs easily).
+    #
+    # CRITICAL: SubprocVecEnv requires factory functions, NOT pre-created instances.
+    # Each subprocess receives a picklable callable and creates its own env.
+    # Pre-created RoomDroneEnv instances cannot be pickled across process boundaries.
+    #
+    # Monitor: only env rank=0 writes to monitor.csv. Multiple envs writing to
+    # the same file would corrupt it. Other envs still use Monitor for episode
+    # stats (needed by SB3 internals) but without file output.
     # ========================================================================
-    env_raw = RoomDroneEnv(gui=False, num_obstacles=NUM_OBS, randomize_obstacles=RAND_OBS, randomize_coins=RAND_COINS, reward_weights=reward_weights)
-    env_mon = Monitor(env_raw, log_dir)
-    env_vec = DummyVecEnv([lambda e=env_mon: e])
-    
+    N_ENVS = 4
+
+    def make_env(rank):
+        def _init():
+            env = RoomDroneEnv(gui=False, num_obstacles=NUM_OBS,
+                               randomize_obstacles=RAND_OBS,
+                               randomize_coins=RAND_COINS,
+                               reward_weights=reward_weights)
+            # Only rank 0 logs to monitor.csv to avoid file corruption
+            return Monitor(env, log_dir if rank == 0 else None)
+        return _init
+
+    env_vec = SubprocVecEnv([make_env(i) for i in range(N_ENVS)])
+
     eval_env_raw = RoomDroneEnv(gui=False, num_obstacles=NUM_OBS, randomize_obstacles=RAND_OBS, randomize_coins=RAND_COINS, reward_weights=reward_weights)
     eval_env_mon = Monitor(eval_env_raw)
     eval_env_vec = DummyVecEnv([lambda e=eval_env_mon: e])
@@ -153,8 +171,8 @@ if __name__ == "__main__":
     ppo_kwargs = dict(
         verbose=1, tensorboard_log=log_dir,
         learning_rate=0.0003,
-        n_steps=4096,
-        batch_size=256,
+        n_steps=4096,   # per env — total rollout = 4096 × N_ENVS = 16384 transitions
+        batch_size=512, # raised from 256: 16384/512 = 32 mini-batches per update
         gamma=0.9995,
         ent_coef=0.05,   # Raised from 0.01 — previous run collapsed to entropy -8
                           # at 1.8M steps and regressed. More exploration needed to
@@ -165,9 +183,18 @@ if __name__ == "__main__":
     # Check for a resumable best_model in the current stage directory first.
     # This allows restarting a stuck run while preserving learned flight skills.
     current_best_path = os.path.join(stage_model_dir, "best_model.zip")
+    current_best_vecnorm = os.path.join(stage_model_dir, "best_model_vecnormalize.pkl")
 
     if os.path.exists(current_best_path):
         print(f"Resuming from current stage best model: {current_best_path}")
+        # Reload VecNormalize stats from checkpoint so normalization is consistent
+        # with the saved policy. Without this, fresh zero-mean stats would make
+        # the loaded policy see completely different scaled observations.
+        if os.path.exists(current_best_vecnorm):
+            env = VecNormalize.load(current_best_vecnorm, env_vec)
+            env.training = True
+            env.norm_reward = True
+            env.gamma = 0.9995
         model = PPO.load(current_best_path, env=env, tensorboard_log=log_dir,
                          ent_coef=0.05)
     elif args.stage > 0:

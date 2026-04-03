@@ -697,8 +697,15 @@ for _ in range(10):
         break
 
 # CHANGED in scripts/train_teacher.py: ent_coef 0.01 → 0.05
-# ADDED: auto-resume from current stage best_model.zip
+# ADDED: auto-resume from current stage best_model.zip with vecnorm reload
+# CHANGED: DummyVecEnv → SubprocVecEnv(N_ENVS=4) for parallel data collection
+#   - 4x faster rollout; PyBullet is CPU-only so RTX 3060 laptop handles this easily
+#   - Factory functions required (pre-created instances can't be pickled)
+#   - Only rank=0 env writes to monitor.csv to avoid file corruption
+#   - batch_size: 256 → 512 (total rollout = 4096×4 = 16384; 32 mini-batches/update)
 ent_coef=0.05
+N_ENVS=4
+batch_size=512
 
 # CHANGED in configs/teacher_ppo.yaml
 # smoothness_penalty_multiplier: 0.05 → 0.02
