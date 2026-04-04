@@ -906,6 +906,7 @@ Rebalances the "approach vs survive" economics:
 ```
 approach + crash:   10 penalty → wiped out by ~29 steps of "safe hovering"  (was 147)
 ```
+
 Now "try approaching" is far less costly; policy gradient won't retreat as aggressively after a crash.
 
 **2. Linear LR Schedule: `3e-4 → 0` over training**
@@ -922,3 +923,51 @@ learning_rate=linear_schedule(3e-4)
 Starts aggressive (fast initial learning), becomes conservative as training progresses — gradient steps shrink as good behaviors are found, reducing regression risk.
 
 **Logs archived to:** `logs/legacy/6_before_lr_schedule_collision_fix/`
+
+---
+
+## Stage 0.25 — Fixed Spawn (No Symmetry Breaking)
+
+**Trigger:** Stage 0.24 completed 10M steps. Full eval trajectory showed rapid improvement to eval=-109 at 280K steps, followed by a plateau at ~-70 to -80 from 2M–10M steps. All episodes terminated at ~250 steps (~1 second of simulation). Reward threshold (500) never reached.
+
+### Root Cause: Negative Per-Step Reward Makes Fast Death Optimal
+
+With symmetry breaking, drone spawned at up to 0.7m from target. Per-step reward at spawn:
+
+```
+alive_bonus=0.1, distance_penalty=0.5×0.7 = 0.35 → net = -0.25/step
+```
+
+Episodic return is maximized by terminating early when per-step reward is negative:
+
+```
+Hover at spawn 14400 steps:  14400 × (-0.25) = -3600
+Die at step 250:             250 × (-0.25) - 10 = -72.5
+```
+
+PPO's value function correctly identified early death as the numerically superior strategy. The policy converged to this "die fast" equilibrium.
+
+### Root Cause 2: Symmetry Breaking Creates Hover-at-Spawn Local Optimum
+
+Even with a corrected alive_bonus, symmetry breaking creates a secondary risk: the drone learns to hover at its random spawn position rather than navigate to the target. With a 0.5m x,y offset, navigating (tilting to move horizontally while maintaining altitude) is harder than pure stabilization. Policy gradient can settle for "hover here" when that already earns positive reward.
+
+### Fix: Fixed Spawn at [0, 0, 2.0]
+
+Drone always spawns at the hover target. This eliminates both failure modes:
+
+1. Per-step reward at spawn = `alive_bonus - 0 - tilt - ang_vel ≈ +0.1/step` — positive. "Die fast" is never optimal.
+2. No spawn ≠ target offset. There is no "hover at spawn" local optimum to fall into.
+
+**Trade-off:** Compass signal is always near [0,0,0] at spawn; policy only sees small perturbations. Compass following for large offsets is Stage 1's responsibility.
+
+**`collision_penalty: 10.0 → 50.0`** reverted. With positive per-step reward, dying is no longer attractive regardless of penalty. -50 is the appropriate deterrent.
+
+```yaml
+stage_0:
+  fixed_spawn: True   # always spawn at [0, 0, 2.0] = hover_target
+
+hover_rewards:
+  collision_penalty: 50.0   # reverted from 10.0
+```
+
+**Logs archived to:** `logs/legacy/7_before_fixed_spawn/`

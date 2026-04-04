@@ -65,6 +65,7 @@ if __name__ == "__main__":
     stage_config = config['stages'][stage_key]
     HOVER_ONLY = stage_config.get('hover_only', False)
     NUM_FIXED_COINS = stage_config.get('num_fixed_coins', 4)
+    FIXED_SPAWN = stage_config.get('fixed_spawn', False)
     REWARD_THRESHOLD = stage_config.get('reward_threshold', 1600.0)
     reward_weights = config['hover_rewards'] if HOVER_ONLY else config['nav_rewards']
     
@@ -105,7 +106,8 @@ if __name__ == "__main__":
                                randomize_coins=RAND_COINS,
                                reward_weights=reward_weights,
                                hover_only=HOVER_ONLY,
-                               num_fixed_coins=NUM_FIXED_COINS)
+                               num_fixed_coins=NUM_FIXED_COINS,
+                               fixed_spawn=FIXED_SPAWN)
             return Monitor(env, log_dir if rank == 0 else None)
         return _init
 
@@ -113,7 +115,8 @@ if __name__ == "__main__":
 
     eval_env_raw = RoomDroneEnv(gui=False, num_obstacles=NUM_OBS, randomize_obstacles=RAND_OBS,
                                 randomize_coins=RAND_COINS, reward_weights=reward_weights,
-                                hover_only=HOVER_ONLY, num_fixed_coins=NUM_FIXED_COINS)
+                                hover_only=HOVER_ONLY, num_fixed_coins=NUM_FIXED_COINS,
+                                fixed_spawn=FIXED_SPAWN)
     eval_env_mon = Monitor(eval_env_raw)
     eval_env_vec = DummyVecEnv([lambda e=eval_env_mon: e])
     

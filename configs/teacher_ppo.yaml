@@ -17,6 +17,7 @@ stages:
     randomize_coins: False
     hover_only: True
     num_fixed_coins: 0
+    fixed_spawn: True
     reward_threshold: 500.0
     run_name: "Stage_0_Hover"
 
@@ -89,7 +90,7 @@ hover_rewards:
   distance_penalty: 0.5
   tilt_penalty: 0.5
   angular_velocity_penalty: 0.05
-  collision_penalty: 10.0
+  collision_penalty: 50.0
 
 # ==========================================
 # NAV REWARDS (Stage 1+)
