@@ -141,13 +141,18 @@ if __name__ == "__main__":
     # can accumulate any positive reward signal. The std evolves freely from there.
     # ent_coef=0.005: small entropy bonus to prevent deterministic collapse without
     # the entropy explosion we saw at 0.05.
+    def linear_schedule(initial_value: float):
+        def func(progress_remaining: float) -> float:
+            return progress_remaining * initial_value
+        return func
+
     policy_kwargs = dict(
         net_arch=dict(pi=[256, 256], vf=[256, 256]),
         log_std_init=-1.2
     )
     ppo_kwargs = dict(
         verbose=1, tensorboard_log=log_dir,
-        learning_rate=0.0003,
+        learning_rate=linear_schedule(3e-4),
         n_steps=4096,
         batch_size=512,
         gamma=0.9995,
@@ -175,7 +180,8 @@ if __name__ == "__main__":
             env.gamma = 0.9995
         else:
             env = VecNormalize(env_vec, norm_obs=True, norm_reward=True, clip_obs=10., gamma=0.9995)
-        model = PPO.load(current_best_path, env=env, tensorboard_log=log_dir, ent_coef=0.005)
+        model = PPO.load(current_best_path, env=env, tensorboard_log=log_dir, ent_coef=0.005,
+                         learning_rate=linear_schedule(3e-4))
 
     elif args.stage > 0 and os.path.exists(prev_vecnorm_path):
         print("Loading previous stage normalization statistics...")
@@ -186,7 +192,8 @@ if __name__ == "__main__":
         prev_model_path = os.path.join(model_dir, prev_run_name, "best_model.zip")
         if os.path.exists(prev_model_path):
             print(f"Found previous brain ({prev_run_name})! Loading weights...")
-            model = PPO.load(prev_model_path, env=env, tensorboard_log=log_dir, ent_coef=0.005)
+            model = PPO.load(prev_model_path, env=env, tensorboard_log=log_dir, ent_coef=0.005,
+                             learning_rate=linear_schedule(3e-4))
         else:
             print("WARNING: Previous model not found! Starting from scratch.")
             model = PPO("MlpPolicy", env, **ppo_kwargs)

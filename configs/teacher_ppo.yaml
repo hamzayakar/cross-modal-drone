@@ -89,7 +89,7 @@ hover_rewards:
   distance_penalty: 0.5
   tilt_penalty: 0.5
   angular_velocity_penalty: 0.05
-  collision_penalty: 50.0
+  collision_penalty: 10.0
 
 # ==========================================
 # NAV REWARDS (Stage 1+)
