@@ -6,23 +6,26 @@ def compute_hover_reward(drone_pos, target_pos, drone_vel, body_pitch, body_roll
     Stage 0 (Hover) reward. No coins, no navigation.
     Goal: reach and hold the virtual hover target [0, 0, 2.0].
 
-    Design principle: compass in obs always points to target_pos (same structure as
-    nav stages where target = nearest coin). Policy learns one skill: minimize the
-    compass vector. In hover the target is fixed; in nav it moves as coins are collected.
+    Reward = max(0, 2 - dist^4) - tilt_penalty*(pitch²+roll²)
+             - angular_velocity_penalty*|ang_vel| - collision_penalty (if any)
 
-    Reward = alive_bonus - distance_penalty * dist_3D - tilt_penalty * (pitch²+roll²)
-             - angular_velocity_penalty * |ang_vel| - collision_penalty (if any)
+    The quartic distance term is always >= 0, so per-step reward is non-negative
+    for any state that doesn't trigger a collision. This eliminates the "die fast"
+    local optimum: the policy gains nothing by crashing early, and loses the
+    accumulated positive reward from staying alive near the target.
 
-    No velocity_penalty: physics drag (-0.5*v) and tilt penalty provide natural
-    damping. Explicit velocity penalty would bias the transferred policy toward
-    slow movement, hurting coin-collection speed in Stage 1+.
+    Breakeven distance: dist = 2^(1/4) ≈ 1.19m. Beyond that the distance term
+    clamps to 0 (neutral), so even a badly drifting drone has no incentive to
+    crash. Staying alive is always >= crashing.
+
+    Tilt and angular velocity penalties remain: they teach stable posture that
+    transfers directly to Stage 1+ navigation maneuvers.
+
+    No alive_bonus or linear distance_penalty: these caused "die fast" when the
+    drone drifted beyond the breakeven distance (0.2m with old alive_bonus=0.1).
     """
-    reward = 0.0
-
-    reward += reward_weights['alive_bonus']
-
     dist = np.linalg.norm(np.array(drone_pos) - np.array(target_pos))
-    reward -= reward_weights['distance_penalty'] * dist
+    reward = max(0.0, 2.0 - dist ** 4)
 
     tilt = body_pitch ** 2 + body_roll ** 2
     reward -= reward_weights['tilt_penalty'] * tilt

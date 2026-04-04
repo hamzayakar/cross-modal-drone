@@ -971,3 +971,80 @@ hover_rewards:
 ```
 
 **Logs archived to:** `logs/legacy/7_before_fixed_spawn/`
+
+---
+
+## Stage 0.26 — Quartic Distance Reward + Thrust Centering
+
+**Trigger:** Stage 0.25 (320K steps analyzed) converged to the same 0.88m equilibrium as Stage 0.23. All 20 eval episodes showed identical pattern: ep_len≈500-800 steps (2-3s), per-step≈-0.35/step, distance≈0.9m. Despite fixed spawn at center, the drone drifted to 0.88m and stayed.
+
+### Root Cause 1: Thrust Bias (action=0 → 10N, not 9.81N)
+
+```python
+# Old:
+target_thrust = ((action[3] + 1.0) / 2.0) * 20.0  # action=0 → 10N
+# hover thrust = 1kg × 9.81 = 9.81N → net upward = 0.19N
+# terminal rise velocity = 0.19/0.5 = 0.38 m/s
+```
+
+The untrained policy outputs action[3]≈0 (log_std_init=-1.2). With 10N thrust and hover at 9.81N, the drone slowly rises from z=2.0. As z increases, compass_z grows, dist grows, per-step reward becomes more negative.
+
+### Root Cause 2: Per-Step Reward Negative Beyond 0.2m (same as before)
+
+The linear `alive_bonus - distance_penalty × dist` formula made per-step reward negative for dist > 0.2m. The 0.88m equilibrium emerged because:
+- At 0.88m: per_step = -0.34/step
+- Die in 600 steps: -254 total
+- Live 14400 steps at 0.88m: -4896 total
+- Dying fast is always numerically superior when per-step is negative
+
+This is the same local optimum that broke Stage 0.23 and 0.24. Fixed spawn eliminated one variant of it but the underlying incentive structure was unchanged.
+
+### Comparison: gym-pybullet-drones (Toronto UTIAS)
+
+The reference implementation uses `reward = -dist²` (also negative), but their episodes run for a **fixed 8 seconds with no early termination**. The policy cannot choose to die early. Our setup allows crash-termination with penalty, creating the "die fast" shortcut.
+
+Their key insight: reward must be structured so early termination is never advantageous.
+
+### Fix 1: Thrust Centering
+
+```python
+# New:
+target_thrust = 9.81 * (1.0 + action[3])  # action=0→9.81N, action=-1→0N, action=+1→19.62N
+```
+
+action=0 now produces exactly hover thrust. The untrained policy no longer has a vertical drift bias.
+
+### Fix 2: Quartic Distance Reward (non-negative)
+
+```python
+reward = max(0.0, 2.0 - dist**4)
+       - tilt_penalty * (pitch² + roll²)
+       - angular_velocity_penalty * |ang_vel|
+       - collision_penalty  (if crash)
+```
+
+Per-step reward is **always ≥ 0** when no collision occurs:
+- At dist=0 (target): +2.0/step → max gradient toward center
+- At dist=0.88m: max(0, 2 - 0.60) = +1.40/step → still positive, dying never wins
+- At dist=1.19m: 0/step → neutral, still no incentive to crash
+- Beyond 1.19m: 0/step → neutral
+
+Staying alive is always ≥ crashing (which gives -50). The "die fast" optimum is structurally impossible.
+
+Gradient toward center is strong and quartic (steep near target, zero at 1.19m). Tilt and ang_vel penalties remain for stable posture transfer to Stage 1+.
+
+`alive_bonus` and `distance_penalty` removed from hover_rewards YAML — no longer used.
+
+### Reward Numerics
+
+```
+dist=0.00m: +2.00/step → 14400 steps = +28800 (theoretical max)
+dist=0.30m: +1.99/step → good hover
+dist=0.88m: +1.40/step → old equilibrium, now positive → no local optimum
+dist=1.19m:  0.00/step → breakeven (beyond this, reward clamps to 0)
+dist=5.00m:  0.00/step → neutral, still alive > dead
+```
+
+reward_threshold updated: 500 → **20000**. Requires mean dist < ~0.3m across 20 eval episodes at 60s each.
+
+**Logs archived to:** `logs/legacy/8_before_quartic_reward/`

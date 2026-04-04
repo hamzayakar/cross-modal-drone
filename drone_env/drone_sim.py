@@ -323,7 +323,7 @@ class RoomDroneEnv(gym.Env):
         target_pitch    = action[0] * (math.pi / 6)          # max ±30 deg
         target_roll     = action[1] * (math.pi / 6)          # max ±30 deg
         target_yaw_rate = action[2] * 2.0                    # max ±2 rad/s
-        target_thrust   = ((action[3] + 1.0) / 2.0) * 20.0   # 0–20 N total
+        target_thrust   = 9.81 * (1.0 + action[3])             # action=0→9.81N (hover), action=±1→[0, 19.62]N
 
         # Fetch physical state from PyBullet
         drone_pos_pre, ori = p.getBasePositionAndOrientation(self.drone_id)

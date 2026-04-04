@@ -18,7 +18,7 @@ stages:
     hover_only: True
     num_fixed_coins: 0
     fixed_spawn: True
-    reward_threshold: 500.0
+    reward_threshold: 20000.0
     run_name: "Stage_0_Hover"
 
   stage_1:
@@ -85,12 +85,12 @@ stages:
 # provide natural damping without biasing Stage 1+ toward slow movement.
 # ==========================================
 hover_rewards:
-  alive_bonus: 0.1
   hover_target: [0.0, 0.0, 2.0]
-  distance_penalty: 0.5
   tilt_penalty: 0.5
   angular_velocity_penalty: 0.05
   collision_penalty: 50.0
+  # alive_bonus and distance_penalty removed: reward is now max(0, 2 - dist^4).
+  # See reward_functions.py compute_hover_reward for details.
 
 # ==========================================
 # NAV REWARDS (Stage 1+)
