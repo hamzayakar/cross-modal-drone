@@ -680,7 +680,6 @@ reward = compute_dense_reward(..., clean_lidar, ...)
 
 **Fix 2 (Environment):** Reversed spawn order in `reset()` — coins are now spawned first, then the drone position is sampled and rejected if within 0.6m of any coin (up to 10 retries). `smoothness_penalty_multiplier` also reduced from 0.05 to 0.02 to reduce over-constraint on early-stage exploration.
 
-**Fix 3 (Watcher Notebooks):** `04_watch_agent_best.ipynb` and `05_watch_agent_live.ipynb` had a double-reset visual artifact. `DummyVecEnv` auto-resets on `done=True` (first world rebuild), then the notebook's `env.reset()` triggered a second `resetSimulation()` immediately after. Fixed by loading `VecNormalize` stats in-place via `cloudpickle` without calling `env.reset()`.
 
 **Code Changes:**
 ```python
@@ -876,14 +875,50 @@ Explicit velocity penalty biases the transferred policy toward slow movement. St
 
 ---
 
-### Notebook Updates (03, 04, 05)
-
-All three watcher notebooks updated with:
-- **Cyan fading trajectory trail:** `p.addUserDebugLine(..., [0, 0.7, 1.0], lifeTime=4.0)` every 12 steps (20 Hz)
-- **`Dist:` field in HUD:** Distance to hover_target (hover) or nearest coin (nav)
-- **`T:` field in HUD:** Episode duration in seconds (`ep_steps / 240.0`)
-- **Notebook 03 (`watch_agent_frozen`):** Completely rewritten — was using stale `config['rewards']` key and missing all visualization features
+**Training run terminated at ~2.36M steps** (eval/mean_ep_length reached 8823, eval/mean_reward -1022) before the compass fix was discovered. Logs archived to `logs/legacy/5_before_virtual_target/`. New training starts from scratch with corrected architecture.
 
 ---
 
-**Training run terminated at ~2.36M steps** (eval/mean_ep_length reached 8823, eval/mean_reward -1022) before the compass fix was discovered. Logs archived to `logs/legacy/5_before_virtual_target/`. New training starts from scratch with corrected architecture.
+## Stage 0.24 — Collision Penalty & LR Schedule Fix (Local Optimum Regression)
+
+**Trigger:** Stage 0.23 run (~2.31M steps) showed a clean pattern: policy peaked at eval=-135 around 320K steps, then catastrophically regressed. By 2.31M steps, eval=-851, ep_len=4474 (drone surviving 18s but hovering ~0.88m from target). The drone learned to hover stably but ignored the compass.
+
+### Root Cause: "Avoid Target" Local Optimum
+
+At 320K the drone was approaching the target (ep_len≈302, fast approach + tilt death). Policy gradient saw repeated crash events and learned "approaching = crash". It retreated to "survive far from target" equilibrium:
+
+```
+survive at 0.88m:  per step = 0.1 - 0.5×0.88 = -0.34/step  (small, safe)
+approach + crash:  collision_penalty = -50  (large, one-time)
+```
+
+With `collision_penalty=50`, the policy correctly calculated that a single crash wipes out ~147 steps of "safe hovering". Entropy rose from -0.62 → -1.30 (policy re-explored), std rose 0.282 → 0.338 — policy destabilized to escape the crash-prone approach behavior.
+
+### Second Root Cause: Static Learning Rate
+
+PPO's static `lr=3e-4` kept applying equally large gradient steps throughout. When the good behavior at 320K was found, the same gradient magnitude that found it also destroyed it over subsequent rollouts. A decaying LR would have preserved the 320K policy by making later updates smaller.
+
+### Fixes
+
+**1. `collision_penalty: 50.0 → 10.0`**
+
+Rebalances the "approach vs survive" economics:
+```
+approach + crash:   10 penalty → wiped out by ~29 steps of "safe hovering"  (was 147)
+```
+Now "try approaching" is far less costly; policy gradient won't retreat as aggressively after a crash.
+
+**2. Linear LR Schedule: `3e-4 → 0` over training**
+
+```python
+def linear_schedule(initial_value: float):
+    def func(progress_remaining: float) -> float:
+        return progress_remaining * initial_value
+    return func
+
+learning_rate=linear_schedule(3e-4)
+```
+
+Starts aggressive (fast initial learning), becomes conservative as training progresses — gradient steps shrink as good behaviors are found, reducing regression risk.
+
+**Logs archived to:** `logs/legacy/6_before_lr_schedule_collision_fix/`
