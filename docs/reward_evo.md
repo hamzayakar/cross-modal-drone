@@ -1147,8 +1147,23 @@ With high mean (27K), variance is forced low: even one episode at 1.1m (r≈2500
 
 Preserves Stage_0_Hover model folder for side-by-side comparison.
 
+**4. Early termination at dist > 1.5m (drone_sim.py)**
+
+```python
+if self.hover_only and hover_dist > 1.5:
+    terminated = True  # no penalty, clean reset
+```
+
+Beyond 1.5m the dist^2 reward is already 0 (breakeven=1.41m). Without termination,
+the drone wastes up to 60s of rollout steps collecting zero signal. Terminating
+early resets the episode and gives the policy another attempt. No collision penalty
+— there is no incentive to deliberately drift to 1.5m since the drone was already
+getting 0 reward before hitting the cutoff.
+
+This matches gym-pybullet-drones (Zürich) ±1.5m XY boundary approach.
+
 ### What This Expects to Produce
 
-The drone spawns at dist=0. With dist^2, the policy receives a 50× stronger signal to not drift. It should learn to output near-zero pitch/roll from the all-zero spawn observation. The 1.1m equilibrium should never form because the gradient at 0.1m is large enough to teach correction before drift compounds.
+The drone spawns at dist=0. With dist^2, the policy receives a 50× stronger signal to not drift. It should learn to output near-zero pitch/roll from the all-zero spawn observation. The 1.1m equilibrium should never form because the gradient at 0.1m is large enough to teach correction before drift compounds. Failed episodes that drift past 1.5m terminate early instead of wasting 60s of zero-reward steps.
 
 Expected outcome: drone hovering within 0.2–0.3m consistently across all 20 eval episodes.

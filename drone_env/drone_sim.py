@@ -481,6 +481,15 @@ class RoomDroneEnv(gym.Env):
                 terminated   = True
                 break
 
+        # Hover-only: terminate if drone drifts too far from hover target.
+        # Beyond 1.5m, dist^2 reward is already 0 (breakeven=1.41m). Continuing
+        # the episode only wastes rollout steps with zero signal.
+        # No collision penalty — episode just resets cleanly.
+        if self.hover_only and not terminated:
+            hover_dist = math.sqrt(sum((drone_pos[i] - self.hover_target[i])**2 for i in range(3)))
+            if hover_dist > 1.5:
+                terminated = True
+
         if self.current_step >= self.max_steps:
             truncated = True
 
