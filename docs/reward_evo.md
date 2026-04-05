@@ -1048,3 +1048,107 @@ dist=5.00m:  0.00/step → neutral, still alive > dead
 reward_threshold updated: 500 → **20000**. Requires mean dist < ~0.3m across 20 eval episodes at 60s each.
 
 **Logs archived to:** `logs/legacy/8_before_quartic_reward/`
+
+---
+
+## Stage 0.26 — RESULT: First Successful Stage Completion ✓
+
+**~1.88M steps to convergence. Mean eval reward = 20,119 → threshold crossed.**
+
+This is the first time any stage has been successfully completed since the project began.
+
+### What Happened
+
+Training converged in ~1.88M steps (well within the 10M budget). The `mean=20119` triggered `StopTrainingOnRewardThreshold`. Final eval breakdown:
+
+```
+18/20 episodes survived full 60 seconds (14,400 steps)
+Best episode:  r=24,252 → avg_dist ≈ 0.75m
+Worst full ep: r=18,971 → avg_dist ≈ 0.91m
+2 early crashes: r≈3,400-4,500 (steps 3600-4900, ~0.93-1.02m)
+```
+
+The training showed a characteristic dip-and-recovery curve: reward dropped from ~2100 at 80K steps to ~640 at 440K steps (policy exploration phase), then climbed steadily to 20K by 1880K steps.
+
+### What the Drone Actually Learned
+
+The drone hovers at **0.75–0.91m from target** on average. This is not tight position control — it is "stable flight somewhere near the target." The compass observation exists but the policy barely uses it: the quartic reward's gradient at 0.1m drift is only −0.004, effectively invisible against tilt/angular-velocity noise. The drone never learned "stay exactly here," it learned "hover stably in the vicinity."
+
+### Why 20K Threshold Was Too Loose
+
+With `max(0, 2 - dist^4)`:
+
+| Threshold | Required avg_dist |
+|-----------|------------------|
+| 20,000    | 0.88m            |
+| 27,000    | 0.59m            |
+| 28,000    | 0.49m            |
+| 28,750    | 0.25m            |
+
+To require 0.25m with dist^4 needs 99.8% of max score — impractical. The quartic function compresses all meaningful distances into the top few percent of the reward range.
+
+Additionally, the eval showed **bimodal distribution**: 18 episodes at 0.75–0.91m (good) and 2 episodes crashing at ~1.0m (bad). A mean threshold masks this inconsistency. A min-based or high-mean threshold would be more honest.
+
+### Gradient Analysis: dist^4 vs dist^2
+
+| dist | dist^4 gradient | dist^2 gradient | stronger |
+|------|----------------|----------------|---------|
+| 0.1m | −0.004         | −0.200         | **dist^2 (50×)** |
+| 0.3m | −0.108         | −0.600         | **dist^2 (6×)** |
+| 0.5m | −0.500         | −1.000         | **dist^2 (2×)** |
+| 0.71m| −1.41          | −1.41          | equal crossover |
+| 0.88m| −2.73          | −1.76          | dist^4 |
+| 1.1m | −5.32          | −2.20          | dist^4 |
+
+Since the drone spawns at dist=0 and the goal is to **stay there**, the relevant range is 0–0.7m. In this range dist^2 is stronger. The drone drifted to 1.1m because the gradient at 0.1m was too weak to correct the initial policy noise before it compounded.
+
+**Model saved at:** `models/Stage_0_Hover/` (preserved for comparison)
+**Eval data saved at:** `logs/teacher_ppo/Stage_0_Hover_v1_evaluations.npz`
+
+---
+
+## Stage 0.27 — Quadratic Distance Reward + Stricter Threshold
+
+**Trigger:** Stage 0.26 passed but drone hovering at 0.75–0.91m is not meaningful hover for Stage 1 navigation. The quartic reward's flat gradient near origin prevented the policy from learning tight position control.
+
+### Changes
+
+**1. dist^4 → dist^2 (reward_functions.py)**
+
+```python
+# Stage 0.26:
+reward = max(0.0, 2.0 - dist**4)
+
+# Stage 0.27:
+reward = max(0.0, 2.0 - dist**2)
+```
+
+50× stronger gradient at 0.1m drift. The drone now gets a meaningful penalty signal the moment it starts to drift from spawn, preventing the 1.1m equilibrium from ever forming.
+
+Breakeven shifts from 1.19m → 1.41m. The "die fast" protection is unchanged (reward still always ≥ 0).
+
+**2. Threshold: 20,000 → 27,000 (teacher_ppo.yaml)**
+
+With dist^2, threshold-to-distance mapping:
+
+```
+dist=0.00m: +2.00/step → 28,800 max
+dist=0.25m: +1.94/step → 27,936 over 60s
+dist=0.30m: +1.91/step → 27,504 → threshold ≈ 27,000
+dist=0.50m: +1.75/step → 25,200
+dist=0.88m: +1.23/step → 17,712
+```
+
+Threshold 27,000 ≈ 0.30m average distance. This is real hover — the drone must stay within arm's reach of the target consistently.
+
+With high mean (27K), variance is forced low: even one episode at 1.1m (r≈2500) would drag the 20-episode mean below threshold. The high mean implicitly enforces consistency.
+
+**3. Run name: Stage_0_Hover → Stage_0_Hover_v2**
+
+Preserves Stage_0_Hover model folder for side-by-side comparison.
+
+### What This Expects to Produce
+
+The drone spawns at dist=0. With dist^2, the policy receives a 50× stronger signal to not drift. It should learn to output near-zero pitch/roll from the all-zero spawn observation. The 1.1m equilibrium should never form because the gradient at 0.1m is large enough to teach correction before drift compounds.
+
+Expected outcome: drone hovering within 0.2–0.3m consistently across all 20 eval episodes.

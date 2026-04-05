@@ -6,26 +6,29 @@ def compute_hover_reward(drone_pos, target_pos, drone_vel, body_pitch, body_roll
     Stage 0 (Hover) reward. No coins, no navigation.
     Goal: reach and hold the virtual hover target [0, 0, 2.0].
 
-    Reward = max(0, 2 - dist^4) - tilt_penalty*(pitch²+roll²)
+    Reward = max(0, 2 - dist^2) - tilt_penalty*(pitch²+roll²)
              - angular_velocity_penalty*|ang_vel| - collision_penalty (if any)
 
-    The quartic distance term is always >= 0, so per-step reward is non-negative
-    for any state that doesn't trigger a collision. This eliminates the "die fast"
-    local optimum: the policy gains nothing by crashing early, and loses the
-    accumulated positive reward from staying alive near the target.
+    The quadratic distance term is always >= 0 (breakeven at sqrt(2) ≈ 1.41m),
+    so per-step reward is non-negative — no "die fast" local optimum.
 
-    Breakeven distance: dist = 2^(1/4) ≈ 1.19m. Beyond that the distance term
-    clamps to 0 (neutral), so even a badly drifting drone has no incentive to
-    crash. Staying alive is always >= crashing.
+    Quadratic vs quartic: gradient at 0.1m drift is 50x stronger (−0.20 vs −0.004).
+    This is the critical fix: the drone spawns AT the target (dist=0). Any tiny
+    action-induced drift must be immediately penalized or the policy learns to
+    ignore it. With dist^4 the gradient at 0.1m was effectively invisible against
+    tilt/ang_vel noise. With dist^2 the signal is 50x larger, teaching the policy
+    to correct small drifts before they compound into the 1.1m equilibrium seen
+    in Stage 0.26.
 
-    Tilt and angular velocity penalties remain: they teach stable posture that
-    transfers directly to Stage 1+ navigation maneuvers.
+    Crossover point: dist^2 has stronger gradient below 0.707m, dist^4 above.
+    Since we want the drone to stay within 0.3m, the relevant range is entirely
+    below the crossover — dist^2 is strictly better here.
 
-    No alive_bonus or linear distance_penalty: these caused "die fast" when the
-    drone drifted beyond the breakeven distance (0.2m with old alive_bonus=0.1).
+    Breakeven at sqrt(2)=1.41m (vs 1.19m quartic) — slightly wider neutral zone,
+    irrelevant if the drone never drifts beyond 0.3m.
     """
     dist = np.linalg.norm(np.array(drone_pos) - np.array(target_pos))
-    reward = max(0.0, 2.0 - dist ** 4)
+    reward = max(0.0, 2.0 - dist ** 2)
 
     tilt = body_pitch ** 2 + body_roll ** 2
     reward -= reward_weights['tilt_penalty'] * tilt
