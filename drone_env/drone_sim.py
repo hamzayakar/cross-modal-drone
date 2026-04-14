@@ -183,13 +183,17 @@ class RoomDroneEnv(gym.Env):
 
         start_yaw = self.np_random.uniform(-math.pi, math.pi)
         if self.fixed_spawn:
-            # Stage 0 (pure hover): always spawn at room center [0, 0, 2.0].
-            # Compass is [0,0,0] at spawn — per-step reward is positive from step 1
-            # (alive_bonus > 0, dist≈0). "Die fast" is never optimal. No symmetry
-            # breaking means no x,y navigation gradient, but Stage 0's only job is
-            # to teach stable flight. Stage 1+ reintroduce randomized spawn.
-            start_x = 0.0
-            start_y = 0.0
+            # Stage 0 (pure hover): spawn near room center with ±0.25m XY offset.
+            # Small offset ensures compass is always non-zero at spawn, giving the
+            # policy a recovery signal from step 1. Spawning exactly at the target
+            # (Stage 0.27) caused a bimodal failure mode: compass=[0,0,0] → policy
+            # output a memorized "nominal hover" action that worked for some physics
+            # worker states but not others, with no gradient to fix it.
+            # ±0.25m keeps the drone within the reward's positive zone (breakeven
+            # sqrt(2)≈1.41m) and forces the policy to learn "navigate to hover point
+            # and hold" rather than "stay where you spawned."
+            start_x = self.np_random.uniform(-0.25, 0.25)
+            start_y = self.np_random.uniform(-0.25, 0.25)
         else:
             # Symmetry Breaking: self.np_random is seeded by Gymnasium's reset(seed=)
             # FIX: Resample drone spawn if it lands inside any coin's collection radius.

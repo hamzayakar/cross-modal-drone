@@ -7,25 +7,20 @@ def compute_hover_reward(drone_pos, target_pos, drone_vel, body_pitch, body_roll
     Goal: reach and hold the virtual hover target [0, 0, 2.0].
 
     Reward = max(0, 2 - dist^2) - tilt_penalty*(pitch²+roll²)
-             - angular_velocity_penalty*|ang_vel| - collision_penalty (if any)
+             - angular_velocity_penalty*|ang_vel|
+             - velocity_penalty*sqrt(vx²+vy²)
+             - collision_penalty (if any)
 
-    The quadratic distance term is always >= 0 (breakeven at sqrt(2) ≈ 1.41m),
-    so per-step reward is non-negative — no "die fast" local optimum.
-
-    Quadratic vs quartic: gradient at 0.1m drift is 50x stronger (−0.20 vs −0.004).
-    This is the critical fix: the drone spawns AT the target (dist=0). Any tiny
-    action-induced drift must be immediately penalized or the policy learns to
-    ignore it. With dist^4 the gradient at 0.1m was effectively invisible against
-    tilt/ang_vel noise. With dist^2 the signal is 50x larger, teaching the policy
-    to correct small drifts before they compound into the 1.1m equilibrium seen
-    in Stage 0.26.
-
-    Crossover point: dist^2 has stronger gradient below 0.707m, dist^4 above.
-    Since we want the drone to stay within 0.3m, the relevant range is entirely
-    below the crossover — dist^2 is strictly better here.
-
-    Breakeven at sqrt(2)=1.41m (vs 1.19m quartic) — slightly wider neutral zone,
-    irrelevant if the drone never drifts beyond 0.3m.
+    Stage 0.29: added lateral velocity penalty.
+    v3 (tilt_penalty=0.15) revealed that without a velocity penalty the policy
+    learns to slowly drift rather than hold position — lateral motion carries no
+    cost, so the optimal policy accepts perpetual drift at ~0.5m instead of
+    converging to center. velocity_penalty directly penalises any horizontal
+    movement, making "close AND still" strictly better than "close AND moving".
+    This eliminates both the slow-drift failure mode and any circular-orbit
+    strategy: both involve non-zero lateral velocity and are now penalised.
+    tilt_penalty raised 0.15 → 0.27 to restore moderate damping without
+    recreating the v2 overdamped 0.28m ceiling.
     """
     dist = np.linalg.norm(np.array(drone_pos) - np.array(target_pos))
     reward = max(0.0, 2.0 - dist ** 2)
@@ -35,6 +30,9 @@ def compute_hover_reward(drone_pos, target_pos, drone_vel, body_pitch, body_roll
 
     ang_vel_magnitude = np.linalg.norm(local_ang_vel)
     reward -= reward_weights['angular_velocity_penalty'] * ang_vel_magnitude
+
+    lateral_vel = np.sqrt(drone_vel[0] ** 2 + drone_vel[1] ** 2)
+    reward -= reward_weights.get('velocity_penalty', 0.0) * lateral_vel
 
     if is_collision:
         reward -= reward_weights['collision_penalty']

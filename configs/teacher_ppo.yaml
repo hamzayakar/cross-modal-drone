@@ -19,7 +19,7 @@ stages:
     num_fixed_coins: 0
     fixed_spawn: True
     reward_threshold: 27000.0
-    run_name: "Stage_0_Hover_v2"
+    run_name: "Stage_0_Hover_v4"
 
   stage_1:
     num_obstacles: 0
@@ -86,12 +86,16 @@ stages:
 # ==========================================
 hover_rewards:
   hover_target: [0.0, 0.0, 2.0]
-  tilt_penalty: 0.5
+  tilt_penalty: 0.27
   angular_velocity_penalty: 0.05
+  velocity_penalty: 0.08
   collision_penalty: 50.0
   # alive_bonus and distance_penalty removed: reward is now max(0, 2 - dist^2).
   # See reward_functions.py compute_hover_reward for details.
   # Stage 0.27: upgraded from dist^4 → dist^2 for 50x stronger gradient near origin.
+  # Stage 0.28: tilt_penalty lowered 0.5 → 0.15 — caused underdamped oscillation/drift.
+  # Stage 0.29: velocity_penalty=0.08 added to penalise lateral motion directly.
+  #   tilt_penalty raised 0.15 → 0.27 for moderate damping without overdamped ceiling.
 
 # ==========================================
 # NAV REWARDS (Stage 1+)

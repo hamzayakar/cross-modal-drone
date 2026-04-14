@@ -1167,3 +1167,119 @@ This matches gym-pybullet-drones (Zürich) ±1.5m XY boundary approach.
 The drone spawns at dist=0. With dist^2, the policy receives a 50× stronger signal to not drift. It should learn to output near-zero pitch/roll from the all-zero spawn observation. The 1.1m equilibrium should never form because the gradient at 0.1m is large enough to teach correction before drift compounds. Failed episodes that drift past 1.5m terminate early instead of wasting 60s of zero-reward steps.
 
 Expected outcome: drone hovering within 0.2–0.3m consistently across all 20 eval episodes.
+
+---
+
+## Stage 0.28 — Spawn Offset (±0.25m) + Reduced Tilt Penalty
+
+**Trigger:** Stage 0.27 reached mean ~24K but stalled. Root cause: spawning exactly at target [0,0,2] means compass=[0,0,0] at every episode start. Policy learned a "memorised nominal hover" action — worked for most physics worker states but 10/20 eval episodes consistently crashed in 2–6s. Bimodal structure persisted for 1.5M+ steps with no learning signal to fix it.
+
+### Changes
+
+**1. Spawn offset: exact [0,0,2] → ±0.25m XY (drone_sim.py)**
+
+```python
+# Stage 0.27 (fixed_spawn):
+start_x = 0.0
+start_y = 0.0
+
+# Stage 0.28:
+start_x = self.np_random.uniform(-0.25, 0.25)
+start_y = self.np_random.uniform(-0.25, 0.25)
+```
+
+Drone now always starts with a non-zero compass vector. Policy must learn "navigate to hover point and hold" instead of "stay where you spawned."
+
+**2. tilt_penalty: 0.5 → 0.15**
+
+v2's 0.5 penalty created a static equilibrium at ~0.28m: cost of tilting to correct = distance reward benefit at that distance. Lowering to 0.15 was intended to let the drone tilt more freely and converge closer.
+
+**3. Run name: Stage_0_Hover_v3**
+
+### Result
+
+Bimodal failure eliminated — no more 10/10 catastrophic split. Continuous episode length distribution. HOWEVER: drone developed an underdamped oscillation/drift, settling at ~0.45–0.55m average distance instead of ~0.28m. Root cause: without a lateral velocity penalty, "drifting at 0.5m" costs nothing extra versus "hovering at 0.5m". Policy found it acceptable to slowly drift rather than actively converge. Peak mean: 16,877 at 1.96M steps, declining thereafter. Training terminated at 2.32M.
+
+---
+
+## Stage 0.29 — Lateral Velocity Penalty
+
+**Trigger:** GUI observation confirmed slow drift pattern: drone not oscillating, just gradually sliding away from hover point. The reward function had no term penalising lateral velocity — drift was "free". Policy optimised for "survive near 1.5m boundary" rather than "hold position at center".
+
+### Root Cause Analysis
+
+Current reward penalises WHERE (dist²) and HOW TILTED (tilt²) but not HOW FAST MOVING (lateral vel). At any given position, drifting sideways at 0.5 m/s earns the same reward as being stationary. The optimal policy under these constraints accepts perpetual drift as long as it stays within the 1.41m reward boundary.
+
+Both failure modes — slow drift AND circular orbit — involve non-zero lateral velocity and are fixed by the same term.
+
+### Changes
+
+**1. velocity_penalty added to compute_hover_reward (reward_functions.py)**
+
+```python
+lateral_vel = np.sqrt(drone_vel[0]**2 + drone_vel[1]**2)
+reward -= reward_weights.get('velocity_penalty', 0.0) * lateral_vel
+```
+
+**2. tilt_penalty: 0.15 → 0.27, velocity_penalty: 0.08 (teacher_ppo.yaml)**
+
+```yaml
+tilt_penalty: 0.27       # moderate damping; 0.5 was overdamped (0.28m ceiling), 0.15 underdamped
+velocity_penalty: 0.08   # penalise lateral motion directly
+```
+
+**3. Run name: Stage_0_Hover_v4**
+
+### Risk: "staying put" local optimum?
+
+Valid concern. If lateral motion is penalised, could the policy learn to just not move toward center?
+
+Per-step analysis at spawn (dist=0.25m), moving toward center at v m/s:
+- Distance reward gain per step: 2 × 0.25 × v/240 = +0.0021v
+- Velocity penalty per step: −0.08v
+- Net immediate: −0.0779v (negative while moving)
+
+Immediate per-step cost is real. But cumulative value of being at center dominates:
+- Reward at center for remaining 14,300 steps: +0.0625/step extra = +893 total
+- Cost of the journey (e.g. 100 steps at 0.1 m/s): 0.08 × 0.1 × 100 = 0.8 total
+
+Net gain from moving to center: **+892**. The PPO value function should capture this.
+
+Practical safeguard: `velocity_penalty.get()` defaults to 0.0, so old checkpoints are unaffected. If v4 shows the drone frozen at spawn, reduce penalty to 0.05 or lower.
+
+### Expected Outcome
+
+Drone approaches center from ±0.25m spawn, decelerates as it nears target, holds position. Velocity penalty makes "close AND still" the unique optimum. Target: avg_dist < 0.35m across 60s episodes → mean ≈ 27K threshold.
+
+### Infrastructure Change (Concurrent with v4)
+
+**N_ENVS: 4 → 12.** Root cause of the previous bottleneck: WSL2 was capped at `processors=4`, making additional environments compete on the same 4 cores with no gain. After raising WSL2 to `processors=16`, N_ENVS was set to 12 (leaving 4 threads for OS + main process).
+
+Rollout scaling: `n_steps=4096 × 12 envs = 49,152 transitions/iter`. `batch_size` scaled to `1536` to maintain 32 mini-batches per update (49,152 / 32 = 1,536). eval_freq=10,000 policy steps × 12 envs → eval every ~120K global timesteps. Training throughput increased roughly 3× vs. 4-env setup.
+
+### Result
+
+Velocity penalty addressed the slow-drift failure mode confirmed in v3: the policy no longer accepts perpetual lateral motion as a free strategy. Episodes that survived past the first few seconds showed measurably less drift than v3. Peak performance (mean ~16.5K, 15/20 full episodes) slightly exceeded v3's peak, confirming the velocity term added genuine signal.
+
+**However, the bimodal failure persisted.** Approximately half of eval episodes consistently crashed in under 5 seconds regardless of training duration. This pattern is structurally different from the drift problem:
+
+- Drift failure: reward gradient was too weak → fixed by velocity penalty.
+- Hard crash failure: policy outputs destabilising actions for certain ±0.25m spawn positions → not a reward design problem.
+
+The reward function is now correctly shaped. The remaining bottleneck is **policy generalisation across spawn conditions**: some (x, y) offsets within ±0.25m fall outside the region the policy has learned to handle. No reward change can fix this directly — the policy must explore and generalise across the full spawn distribution.
+
+### What v4 Revealed
+
+The Stage 0 reward design is complete. Three iterations converged on:
+
+```
+R = max(0, 2 - dist²)
+  - tilt_penalty × (pitch² + roll²)
+  - angular_velocity_penalty × |ang_vel|
+  - velocity_penalty × sqrt(vx² + vy²)
+  - collision_penalty  [if crash]
+```
+
+Each term addresses a specific failure mode: dist² for gradient strength, tilt for damping, ang_vel for attitude noise, lateral vel for drift. No further reward terms are expected to help.
+
+The unsolved problem is whether PPO can generalise hover across all ±0.25m spawn positions within a 10M-step budget, or whether a different training regime (shorter episodes, domain randomisation schedule, or alternative spawn strategy) is needed. This is the decision point for Stage 0 exit.
