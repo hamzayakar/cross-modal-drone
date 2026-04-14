@@ -13,3 +13,18 @@ checkpoints/
 logs/
 *.pth
 *.pt
+
+# Model weights and normalization stats (training artifacts)
+models/Stage_*/
+*.zip
+*.pkl
+
+# Personal assistant config
+CLAUDE.md
+.claude/
+
+# Lab notes / training watch files
+training_watch_notes.md
+
+# Windows metadata
+*:Zone.Identifier
