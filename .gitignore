@@ -28,3 +28,6 @@ training_watch_notes.md
 
 # Windows metadata
 *:Zone.Identifier
+
+# Assistant reference notes (not project docs)
+docs/tensorboard_parsing.md
