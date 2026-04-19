@@ -1,33 +1,44 @@
-# Python caches
+# Configuration and Secrets
+.env
+.env.*
+
+# Windows / WSL Metadata
+*:Zone.Identifier
+Thumbs.db
+
+# macOS
+.DS_Store
+
+# Python & Machine Learning
 __pycache__/
 *.py[cod]
-*venv/
-.env
-
-# VS Code
-.vscode/
-
-# Machine Learning & Thesis specific
-data/
-checkpoints/
+*.so
 logs/
+checkpoints/
 *.pth
 *.pt
+*.h5
+runs/
+tb_logs/
 
-# Model weights and normalization stats (training artifacts)
+# Virtual environments
+*venv/
+.venv/
+
+# IDE
+.vscode/
+
+# SB3 model weights and normalization stats
 models/Stage_*/
 *.zip
 *.pkl
 
-# Personal assistant config
+# Claude Code local config (personal assistant schema, not project code)
 CLAUDE.md
 .claude/
 
-# Lab notes / training watch files
+# Lab notes / training watch files (research scratchpad, not code)
 training_watch_notes.md
 
-# Windows metadata
-*:Zone.Identifier
-
-# Assistant reference notes (not project docs)
+# Assistant reference notes
 docs/tensorboard_parsing.md
