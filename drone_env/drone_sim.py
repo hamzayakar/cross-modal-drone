@@ -25,7 +25,10 @@ class RoomDroneEnv(gym.Env):
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(50,), dtype=np.float32)
         
         self.room_bounds = [8.0, 8.0, 4.0]
-        self.max_steps = 14400
+        self.max_steps = 7200  # 30 sim-seconds at 240Hz. Literature: Swift 6s, DPRL 25s.
+        # 60s (14400) caused policy instability — long episodes amplify variance,
+        # leading to forgetting after the policy peaks. 30s gives 1.5x margin over
+        # the ~20s physically needed to collect 4 coins at 0.5m/s average.
         
         self.num_obstacles = num_obstacles
         self.randomize_obstacles = randomize_obstacles

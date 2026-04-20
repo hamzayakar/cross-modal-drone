@@ -97,7 +97,7 @@ if __name__ == "__main__":
     # the same file would corrupt it. Other envs still use Monitor for episode
     # stats (needed by SB3 internals) but without file output.
     # ========================================================================
-    N_ENVS = 12  # 14-core/20-thread CPU (i7-12/13gen); WSL2 given 16 processors, 12 envs + 4 for main/OS
+    N_ENVS = 14  # 16 processors in WSL2; 14 envs + 2 for main + OS
 
     def make_env(rank):
         def _init():
@@ -157,7 +157,7 @@ if __name__ == "__main__":
         verbose=1, tensorboard_log=log_dir,
         learning_rate=linear_schedule(3e-4),
         n_steps=4096,
-        batch_size=1536,  # scaled with N_ENVS: 4096×12=49152 rollout, 49152/1536=32 mini-batches
+        batch_size=1792,  # scaled with N_ENVS=14: 4096×14=57344 rollout, 57344/32=1792 per mini-batch
         gamma=0.9995,
         ent_coef=0.005,
         policy_kwargs=policy_kwargs
