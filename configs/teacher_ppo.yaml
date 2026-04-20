@@ -36,8 +36,8 @@ stages:
     randomize_coins: False
     hover_only: False
     num_fixed_coins: 4
-    reward_threshold: 1500.0
-    run_name: "Stage_2_Navigator"
+    reward_threshold: 2000.0
+    run_name: "Stage_2_Navigator_v2"
 
   stage_3:
     num_obstacles: 0
@@ -101,8 +101,11 @@ hover_rewards:
 # NAV REWARDS (Stage 1+)
 # ==========================================
 nav_rewards:
-  alive_bonus: 0.02
-  distance_penalty_multiplier: 0.02
+  # Progress reward: replaces alive_bonus + distance_penalty (Stage 2 redesign).
+  # Old structure: alive=0.02 - 0.02*dist → negative per-step at dist>1m → Suicide Policy.
+  # New structure: +weight * (prev_dist - curr_dist) → always zero to collect, never negative for surviving.
+  # Literature: Kaufmann et al. 2023 (Swift, Nature) uses pure progress reward for drone navigation.
+  progress_reward_weight: 50.0
   velocity_penalty_multiplier: 0.0
   smoothness_penalty_multiplier: 0.02
   lidar_penalty_multiplier: 0.5

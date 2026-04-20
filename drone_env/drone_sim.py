@@ -50,8 +50,9 @@ class RoomDroneEnv(gym.Env):
         
         self.num_rays = 36
         self.lidar_range = 5.0
-        
+
         self.prev_action = np.zeros(4, dtype=np.float32)
+        self.prev_coin_distance = 0.0  # for progress reward: distance to nearest coin last step
 
     def _build_closed_room(self):
         """Builds the 16x16m room with glass walls."""
@@ -216,6 +217,15 @@ class RoomDroneEnv(gym.Env):
         urdf_path = os.path.join(os.path.dirname(__file__), "cf2x.urdf")
         self.drone_id = p.loadURDF(urdf_path, start_pos, baseOrientation=start_ori, globalScaling=4.0)
         p.changeDynamics(self.drone_id, -1, mass=1.0)
+
+        # Initialise prev_coin_distance so first step doesn't spike a negative progress reward.
+        if not self.hover_only and self.gold_data:
+            self.prev_coin_distance = min(
+                math.sqrt(sum((start_pos[i] - g["pos"][i])**2 for i in range(3)))
+                for g in self.gold_data
+            )
+        else:
+            self.prev_coin_distance = 0.0
 
         return self._get_obs(), {}
 
@@ -445,6 +455,7 @@ class RoomDroneEnv(gym.Env):
         current_distance = 0.0
 
         # Coin Collection Logic (navigation stages only)
+        coin_progress = 0.0
         if not self.hover_only:
             if len(self.gold_data) > 0:
                 distances = [math.sqrt(sum((d - val)**2 for d, val in zip(drone_pos, g["pos"])))
@@ -456,6 +467,18 @@ class RoomDroneEnv(gym.Env):
                     p.removeBody(self.gold_data[closest_idx]["id"])
                     self.gold_data.pop(closest_idx)
                     coin_collected = True
+                    # Reset prev_distance to next coin; don't count snap as progress.
+                    if self.gold_data:
+                        next_distances = [math.sqrt(sum((d - val)**2 for d, val in zip(drone_pos, g["pos"])))
+                                          for g in self.gold_data]
+                        self.prev_coin_distance = min(next_distances)
+                    else:
+                        self.prev_coin_distance = 0.0
+                    coin_progress = 0.0
+                else:
+                    # Progress = distance closed toward nearest coin since last step.
+                    coin_progress = self.prev_coin_distance - current_distance
+                    self.prev_coin_distance = current_distance
 
             if len(self.gold_data) == 0:
                 is_success = True
@@ -516,7 +539,7 @@ class RoomDroneEnv(gym.Env):
             reward = compute_dense_reward(
                 drone_pos, drone_vel, action, current_distance,
                 is_collision, is_success, clean_lidar, coin_collected,
-                action_diff,
+                action_diff, coin_progress,
                 reward_weights=self.reward_weights
             )
 

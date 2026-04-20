@@ -40,18 +40,24 @@ def compute_hover_reward(drone_pos, target_pos, drone_vel, body_pitch, body_roll
     return reward
 
 
-def compute_dense_reward(drone_pos, drone_vel, action, current_distance, is_collision, is_success, lidar_data, coin_collected, action_diff, reward_weights=None):
+def compute_dense_reward(drone_pos, drone_vel, action, current_distance, is_collision, is_success, lidar_data, coin_collected, action_diff, coin_progress=0.0, reward_weights=None):
     """
     Stage 1+ (Navigation) reward. Dense shaping for coin-collection flight.
     Weights are loaded from YAML nav_rewards section. Default values here
     are kept in sync with teacher_ppo.yaml to prevent silent reward mismatch
     in tests/notebooks that instantiate the env without passing reward_weights.
+
+    Stage 2 redesign: replaced alive_bonus + distance_penalty with a progress
+    reward (distance closed toward nearest coin per step). The old structure
+    made per-step reward negative at distances > 1m (alive=0.02, penalty=0.02*d),
+    causing the Suicide Policy / alive-bonus farming collapse at Stage 2.
+    Progress reward is distance-agnostic: same shaped signal whether the coin
+    is 1m or 5.66m away. Literature: Kaufmann et al. 2023 (Swift, Nature).
     """
     if reward_weights is None:
         reward_weights = {
-            'alive_bonus': 0.02,
-            'distance_penalty_multiplier': 0.02,
-            'velocity_penalty_multiplier': 0.003,
+            'progress_reward_weight': 50.0,
+            'velocity_penalty_multiplier': 0.0,
             'smoothness_penalty_multiplier': 0.02,
             'lidar_penalty_multiplier': 0.5,
             'coin_collection_reward': 300.0,
@@ -61,12 +67,13 @@ def compute_dense_reward(drone_pos, drone_vel, action, current_distance, is_coll
 
     reward = 0.0
 
-    reward += reward_weights['alive_bonus']
-
-    reward -= reward_weights['distance_penalty_multiplier'] * current_distance
+    # Progress reward: metres closed toward nearest coin × weight.
+    # Positive when approaching, negative when retreating, zero when hovering.
+    # Dying is always dominated: -300 collision < 0 progress any finite path.
+    reward += reward_weights.get('progress_reward_weight', 50.0) * coin_progress
 
     velocity_magnitude = np.linalg.norm(drone_vel)
-    reward -= reward_weights['velocity_penalty_multiplier'] * velocity_magnitude
+    reward -= reward_weights.get('velocity_penalty_multiplier', 0.0) * velocity_magnitude
 
     reward -= reward_weights.get('smoothness_penalty_multiplier', 0.02) * action_diff
 
