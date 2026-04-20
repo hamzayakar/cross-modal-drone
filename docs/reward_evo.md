@@ -1454,3 +1454,39 @@ nav_rewards:
 Corrupted Stage_2_Navigator model folder deleted. Stage_2_Navigator_v2 starts from Stage_1_Scout weights.
 
 **Code changes:** `drone_sim.py` (prev_coin_distance tracking), `reward_functions.py` (progress reward replaces alive+distance), `configs/teacher_ppo.yaml` (nav_rewards restructured, run_name updated).
+
+---
+
+## Stage 2 — Navigator v3: Episode Length + N_ENVS Fix
+
+**Date:** 2026-04-20
+
+### Why v2 Failed (Full Analysis)
+
+v2 peaked at **2.04M steps** (mean 1121, 11/20 episodes with r>1200 = multi-coin collection). Then regressed continuously through 3.72M steps, ending with r>1200=0/20 for 12 consecutive evals and max reward ~850 (1-2 coins only).
+
+This is **policy instability at long episodes**, not a reward design problem. At 14400 steps (60 sim-seconds), the policy must maintain correct multi-coin behavior for a very long time. Any variance in the rollout causes forgetting. The best strategy was confirmed possible (2.04M proved it), the policy just couldn't hold it consistently.
+
+This is distinct from v1's alive-bonus farming collapse (mean went to -200). v2's mean stayed at 400-700 — the policy was not broken, just inconsistent.
+
+### Changes for v3
+
+**1. max_steps: 14400 → 7200 (60s → 30s)**
+
+Literature range: Swift 6s, DPRL 25s, gym-pybullet-drones 8s. Physical minimum to collect 4 coins at 0.5 m/s average is ~20s — 30s gives 1.5x margin. Shorter episodes mean more resets per hour, more gradient updates, and less opportunity for variance to compound into forgetting.
+
+**2. N_ENVS: 12 → 14**
+
+WSL2 has 16 processors. 14 envs + 2 for main process + OS headroom. ~15% more data per unit time.
+
+**3. batch_size: 1536 → 1792**
+
+Maintains 32 mini-batches: 4096×14=57344 rollout / 32 = 1792.
+
+**4. reward_threshold: 2000 → 1500**
+
+Scaled for shorter episodes. Absolute reward is lower with fewer steps available for progress accumulation, but coin/success bonuses unchanged.
+
+**5. run_name: Stage_2_Navigator_v3**
+
+Starts from Stage_1_Scout weights. Stage_2_Navigator_v2 best model (2.04M, mean 1121) preserved as fallback but not used as starting point to avoid any instability baked into its weights.
