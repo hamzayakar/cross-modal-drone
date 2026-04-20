@@ -1,61 +1,73 @@
-# Cross-Modal Drone RL: Curriculum Learning
+# Cross-Modal Drone RL
 
-This repository contains a PyBullet-based 3D drone simulation designed to train an autonomous agent using Reinforcement Learning (PPO). The project employs a strict **Curriculum Learning** approach, scaling from a simple empty room up to a highly complex, randomized obstacle-dense environment.
+PyBullet-based 3D quadrotor simulation for curriculum reinforcement learning. A PPO teacher policy is trained through a 7-stage curriculum (hover → full autonomy), then distilled into a CNN-based student that flies from depth camera input only.
 
-## 🏗️ Project Architecture
-* `configs/`: YAML configuration files containing curriculum stages and reward shaping weights (`teacher_ppo.yaml`).
-* `drone_env/`: Custom Gymnasium environment integrated with PyBullet physics, including a mathematically accurate 50-D ego-centric state space (1-D Altitude + 2-D Roll/Pitch + 2-D Yaw Sin/Cos + 9-D Kinematics/Compass + 36-D LiDAR raycasting).
-* `models/`: Saved weights (`.zip`) and dynamic normalization stats (`.pkl`) of the best performing PPO agents.
-* `scripts/`: Training scripts and CLI tools.
-* `notebooks/`: Jupyter Notebooks for live-tracking the agent's progress and debugging.
-* `docs/`: Markdown documents logging the evolution of the reward function and "Reward Hacking" behaviors.
+## Project Structure
 
-## 🚀 Curriculum Learning Stages (5-Step Plan)
-To prevent policy instability and catastrophic forgetting, the agent is trained sequentially. The environment parameters (obstacles, coin randomness) are fully managed via `configs/teacher_ppo.yaml`. You can control the training stage via the CLI parameter `--stage`.
-
-### Stage 0: The Baby Step (Kinematics Focus)
-Empty room, 4 fixed coins. Goal: Learn basic hover stability and flight towards static coordinates.
-```bash
-python scripts/train_teacher.py --stage 0
+```
+configs/teacher_ppo.yaml   — curriculum stage configs + reward weights
+drone_env/drone_sim.py     — Gymnasium env (PyBullet 240Hz, PD controller, 50-D obs)
+drone_env/reward_functions.py — hover + navigation reward functions
+scripts/train_teacher.py   — PPO training entry point
+scripts/distill_policy.py  — teacher → student distillation (future)
+models/                    — saved weights (.zip) + VecNormalize stats (.pkl)
+notebooks/                 — PyBullet GUI watchers (live training + frozen eval)
+docs/reward_evo.md         — full training history: every bug, local optimum, and fix
 ```
 
-### Stage 1: The Toddler (Navigation Focus)
-Empty room, random coins. Goal: Generalize flight paths based on dynamic relative distance vectors.
-```bash
-python scripts/train_teacher.py --stage 1
-```
+## Architecture
 
-### Stage 2: The Explorer (Memory Focus)
-20 fixed obstacles (Seed: 42), fixed coins. Goal: Introduce LiDAR penalties without overwhelming the agent.
+**Action space (4-D):** `[Target Pitch, Target Roll, Target Yaw Rate, Target Thrust]` mapped to ±30°, ±30°, ±2 rad/s, 0–19.62 N. A low-level PD controller handles motor mixing at 240Hz.
+
+**Observation space (50-D ego-centric):**
+- 1D Z altitude
+- 2D body-frame roll, pitch
+- 2D sin/cos yaw
+- 3D local linear velocity (body frame)
+- 3D local angular velocity (body frame)
+- 3D ego-centric compass to nearest target (body frame)
+- 36D gimbal-stabilized LiDAR (yaw-only rotation)
+
+## Curriculum Stages
+
+| Stage | Name | Obstacles | Coins | Key skill |
+|---|---|---|---|---|
+| 0 | Hover | 0 | 0 (virtual target) | Stable hover at [0,0,2] |
+| 1 | Scout | 0 | 1 fixed (1m away) | Compass following |
+| 2 | Navigator | 0 | 4 fixed | Sequential navigation |
+| 3 | Hunter | 0 | 10-18 random | Search + collection |
+| 4 | Pathfinder | 20 fixed | 4 fixed | Obstacle avoidance |
+| 5 | Pioneer | 20 fixed | random | Avoidance + search |
+| 6 | Apex | 20 random | random | Full autonomy |
+
+Training loads weights from the previous stage automatically:
+
 ```bash
 python scripts/train_teacher.py --stage 2
 ```
 
-### Stage 3: The Navigator (Dynamic Routing)
-20 fixed obstacles (Seed: 42), random coins. Goal: Plan paths around known obstacles to reach dynamic targets.
-```bash
-python scripts/train_teacher.py --stage 3
+## Reward Design
+
+**Stage 0 (Hover):**
+```
+R = max(0, 2 − dist²) − tilt_penalty×(pitch²+roll²) − ang_vel_penalty×|ω| − vel_penalty×lateral_vel
 ```
 
-### Stage 4: The Hunter (Full Autonomy)
-20 random obstacles, random coins. Goal: True zero-shot obstacle avoidance and dynamic pathfinding in a completely randomized room.
-```bash
-python scripts/train_teacher.py --stage 4
+**Stage 1+ (Navigation):**
+```
+R = progress_weight × (prev_dist − curr_dist) + coin_reward + success_bonus − collision_penalty
 ```
 
-*(Note: The training script is designed for sequential Curriculum Learning. Starting a higher stage will automatically load the `best_model.zip` from the previous stage to build upon the existing policy.)*
+Progress reward (metres closed toward nearest coin × weight) replaced the original `alive_bonus − distance_penalty×dist` structure after Stage 2 collapsed into alive-bonus farming. See `docs/reward_evo.md` for the full diagnosis.
 
-## 📊 Live Monitoring & Configuration
-**Configuration:** Modify reward coefficients and stage parameters on the fly without changing Python code by editing `configs/teacher_ppo.yaml`.
+## Monitoring
 
-**Evaluation:** Track the training metrics (Ep Length, Ep Reward, etc.) in real-time using TensorBoard:
 ```bash
-tensorboard --logdir logs/
+tensorboard --logdir logs/teacher_ppo
 ```
 
-To watch the agent's behavior live in the PyBullet GUI without interrupting the training process, run the Live Tracker Notebooks:
-* `notebooks/04_watch_agent_best.ipynb`
-* `notebooks/05_watch_agent_live.ipynb`
+Notebooks 03–05 watch the agent live in PyBullet GUI. Set `RENDER_STRIDE = 10` for real-time speed, `1` for slow-motion.
 
-## ⚖️ Custom Reward Shaping (Hunter Model)
-The environment features a dense reward function specifically tuned to prevent "Ceiling Hugging" and "Suicide Policies." It mathematically balances a tight `Alive Bonus` with a `Distance Penalty`, forcing the agent to move toward the target to yield a positive net reward, heavily incentivized by a massive `Coin Collection` spike. (See `docs/reward_evolution.md` for the full history).
+## Distillation (future)
+
+Once the Stage 6 teacher is complete: teacher MLP (50-D privileged state) → student CNN (depth camera frames) via behavioral cloning / DAgger. The teacher's ego-centric observation design ensures action labels are camera-frame compatible.
