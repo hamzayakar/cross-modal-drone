@@ -1567,3 +1567,29 @@ Training resumes from `Stage_2_Navigator_v4/best_model.zip` (the 1569-mean check
 Thresholds for navigation stages need to account for the fact that progress reward + coin rewards can easily exceed a low bar even with inconsistent performance. Rule of thumb going forward: set threshold at ~70-80% of the theoretical maximum for the stage rather than a fixed value.
 
 For Stage 2 with 4 coins: theoretical max ≈ 4×300 + 1000 success + ~730 progress = ~2930. Threshold 2000 ≈ 68% of max — requires consistent 3-coin collection or occasional 4-coin completion.
+
+---
+
+## Distillation Readiness Note: Teacher Yaw Alignment Problem
+
+**Date:** 2026-04-21
+
+### Observation
+
+The teacher drone does not consistently face coins when approaching them. As a quadrotor, it can fly sideways, backward, or at arbitrary angles relative to its nose direction. The red arrow in the GUI (body +Y forward) frequently points in a different direction from the movement vector.
+
+### Why This Matters for Distillation
+
+The student uses a camera fixed to the body frame. If the teacher approaches a coin from an angle where the coin is off-camera, the student receives unlearnable training data: no visual information about the coin, but a teacher action that implies "go here." Behavioral cloning requires that the teacher's reasoning is recoverable from the student's observations.
+
+### Options (to evaluate before distillation begins)
+
+1. **Yaw alignment reward**: Add a small bonus for having the compass vector aligned with body forward (+Y). Incentivizes the teacher to face coins before approaching — makes behavior camera-explainable by construction. Something like `cos(angle_between_compass_and_body_Y) × small_weight`.
+
+2. **Wider camera FOV**: Use 120-150° wide-angle lens for the student. Coin more likely to be in frame even with misaligned yaw. No teacher retraining needed.
+
+3. **DAgger instead of pure behavioral cloning**: Collects new teacher demonstrations at states the student actually reaches, including recovery from "coin off-screen" situations. Handles distribution shift directly.
+
+4. **Accept and measure**: If the drone mostly faces coins when close (body-frame compass naturally incentivizes yaw toward target), the problem may be smaller than it looks. Watch several episodes and measure what fraction of approach steps have the coin significantly off-axis.
+
+**Decision point**: Watch the trained Stage 2/3 teacher carefully. If coin is frequently behind the camera during approach → Option 1 or 3. If rarely → Option 4 or 2.

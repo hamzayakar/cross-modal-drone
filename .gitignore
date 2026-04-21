@@ -30,6 +30,7 @@ tb_logs/
 
 # SB3 model weights and normalization stats
 models/Stage_*/
+models/archive/
 *.zip
 *.pkl
 
