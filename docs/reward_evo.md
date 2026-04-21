@@ -1537,3 +1537,33 @@ Each coin forces a genuine heading change; no two consecutive coins are in oppos
 **3. run_name: Stage_2_Navigator_v4**
 
 Starts from Stage_1_Scout weights.
+
+---
+
+## Stage 2 — Navigator v4: First Eval Result & Threshold Correction
+
+**Date:** 2026-04-21
+
+### Result at 140K Steps
+
+Training stopped at the very first eval. New coin geometry worked immediately:
+
+```
+Step 140,000 | mean 1569.9 | max 2552.6 | min -24.2 | avg_len 4881 | r>1200: 12/20
+```
+
+12/20 episodes collected 2-3 coins. Max 2552 indicates some episodes reaching 3-4 coins. The Stage 1 policy transferred directly — same pattern as Stage 1 solving instantly from Stage 0 weights.
+
+**Root cause of immediate stop:** reward_threshold was 1500, mean was 1569. `StopTrainingOnRewardThreshold` fired after one eval, same mistake as Stage 1 (threshold 600, mean 1299).
+
+### Threshold Correction
+
+1500 → **2000**. Requires more consistent multi-coin collection across all 20 eval episodes. The 12/20 success rate at 60% is not solid enough for Stage 3 transfer.
+
+Training resumes from `Stage_2_Navigator_v4/best_model.zip` (the 1569-mean checkpoint). No restart from Stage 1 weights needed.
+
+### Lesson
+
+Thresholds for navigation stages need to account for the fact that progress reward + coin rewards can easily exceed a low bar even with inconsistent performance. Rule of thumb going forward: set threshold at ~70-80% of the theoretical maximum for the stage rather than a fixed value.
+
+For Stage 2 with 4 coins: theoretical max ≈ 4×300 + 1000 success + ~730 progress = ~2930. Threshold 2000 ≈ 68% of max — requires consistent 3-coin collection or occasional 4-coin completion.

@@ -36,7 +36,7 @@ stages:
     randomize_coins: False
     hover_only: False
     num_fixed_coins: 4
-    reward_threshold: 1500.0
+    reward_threshold: 2000.0
     run_name: "Stage_2_Navigator_v4"
 
   stage_3:
