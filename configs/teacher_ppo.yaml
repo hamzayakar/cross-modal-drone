@@ -37,7 +37,7 @@ stages:
     hover_only: False
     num_fixed_coins: 4
     reward_threshold: 1500.0
-    run_name: "Stage_2_Navigator_v3"
+    run_name: "Stage_2_Navigator_v4"
 
   stage_3:
     num_obstacles: 0

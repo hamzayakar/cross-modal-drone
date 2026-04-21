@@ -25,10 +25,10 @@ class RoomDroneEnv(gym.Env):
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(50,), dtype=np.float32)
         
         self.room_bounds = [8.0, 8.0, 4.0]
-        self.max_steps = 7200  # 30 sim-seconds at 240Hz. Literature: Swift 6s, DPRL 25s.
-        # 60s (14400) caused policy instability — long episodes amplify variance,
-        # leading to forgetting after the policy peaks. 30s gives 1.5x margin over
-        # the ~20s physically needed to collect 4 coins at 0.5m/s average.
+        self.max_steps = 10800  # 45 sim-seconds at 240Hz.
+        # 30s (7200) was too short for the old coin geometry (11.3m final leg).
+        # New coin positions reduce total path to ~13m → 26s minimum.
+        # 45s gives 1.7x margin, accommodates slow/non-optimal paths.
         
         self.num_obstacles = num_obstacles
         self.randomize_obstacles = randomize_obstacles
@@ -128,11 +128,18 @@ class RoomDroneEnv(gym.Env):
             # NOTE: Drone is Y-forward. At Yaw=0 this coin is to the drone's RIGHT (+X),
             # not ahead (+Y). Force-feeding benefit is proximity (~1m away), not direction.
             # The ego-centric compass vector guides the agent regardless of heading.
+            # Stage 2 coin geometry redesign (v4):
+            # Old positions: coins 3-4 at [4,4] and [-4,-4] (opposite corners, 11.3m apart).
+            # Total path ~20m @ 0.5m/s = 40s → exceeded 30s episode budget.
+            # New positions: form a clockwise ring, each ~3m from center, ~4m between consecutive.
+            # Total path ~13m @ 0.5m/s = 26s → fits 30s with margin at 7200 steps.
+            # Graduated difficulty: 1m → 2m → 3m → 3m, each in a different quadrant to
+            # force real heading changes. No two consecutive coins are opposite each other.
             fixed_positions = [
-                [1.0, 0.0, 2.0],
-                [0.0, 1.5, 2.0],
-                [4.0, 4.0, 2.0],
-                [-4.0, -4.0, 2.0]
+                [ 1.0,  0.0, 2.0],   # coin 1: 1m, easy entry
+                [ 0.0,  2.0, 2.0],   # coin 2: 2m, 90° heading change
+                [-2.5,  1.5, 2.0],   # coin 3: ~2.9m, 135° heading change
+                [-1.5, -2.5, 2.0],   # coin 4: ~2.9m, 180° heading change
             ]
             for pos in fixed_positions[:self.num_fixed_coins]:
                 vs = p.createVisualShape(p.GEOM_SPHERE, radius=0.12, rgbaColor=[1, 0.84, 0, 1])

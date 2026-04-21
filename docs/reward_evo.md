@@ -1490,3 +1490,50 @@ Scaled for shorter episodes. Absolute reward is lower with fewer steps available
 **5. run_name: Stage_2_Navigator_v3**
 
 Starts from Stage_1_Scout weights. Stage_2_Navigator_v2 best model (2.04M, mean 1121) preserved as fallback but not used as starting point to avoid any instability baked into its weights.
+
+---
+
+## Stage 2 — Navigator v4: Coin Geometry Redesign + Episode Length Correction
+
+**Date:** 2026-04-21
+
+### Why v3 Failed (Root Cause)
+
+v3 ran the full 10M step budget. r>1200 = 0/20 across all 71 evals. The policy reliably collected 1-2 coins but never reached coins 3-4.
+
+Root cause: **the coin geometry made the task physically impossible within the 30s (7200 step) episode budget.**
+
+The old fixed positions:
+```
+Coin 1: [1,  0, 2]   →  1.0m from center
+Coin 2: [0,  1.5, 2] →  1.5m from center
+Coin 3: [4,  4, 2]   →  5.66m from center
+Coin 4: [-4,-4, 2]   →  5.66m from center (OPPOSITE corner from coin 3)
+```
+
+Path from coin 3 → coin 4: `[4,4] → [-4,-4]` = 8√2 = **11.3m**. At 0.5 m/s that single leg takes 22.6 sim-seconds. Total full-collection path: ~20m = ~40 sim-seconds = 9600 steps. This physically exceeds the 7200-step budget. The policy was not failing to learn — it was mathematically prevented from completing the task within the time limit.
+
+The v2 peak (11/20 success at 2.04M steps with 14400 step budget) was real capability; v3 cut the budget below the physical minimum.
+
+### Changes for v4
+
+**1. Coin positions redesigned**
+
+New layout — clockwise ring, each coin ~2-3m from center, each in a different quadrant:
+```python
+[ 1.0,  0.0, 2.0],   # coin 1: 1m, easy entry
+[ 0.0,  2.0, 2.0],   # coin 2: 2m, 90° heading change  
+[-2.5,  1.5, 2.0],   # coin 3: ~2.9m, 135° heading change
+[-1.5, -2.5, 2.0],   # coin 4: ~2.9m, opposite quadrant
+```
+
+Total path: ~13m. At 0.5 m/s: ~26 sim-seconds = 6240 steps. Fits in 45s with 1.7x margin.
+Each coin forces a genuine heading change; no two consecutive coins are in opposite corners.
+
+**2. max_steps: 7200 → 10800 (30s → 45s)**
+
+26s physical minimum with new geometry. 45s gives comfortable margin for slow/non-optimal paths.
+
+**3. run_name: Stage_2_Navigator_v4**
+
+Starts from Stage_1_Scout weights.
