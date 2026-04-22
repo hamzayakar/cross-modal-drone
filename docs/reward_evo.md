@@ -1631,3 +1631,56 @@ The student uses a camera fixed to the body frame. If the teacher approaches a c
 4. **Accept and measure**: If the drone mostly faces coins when close (body-frame compass naturally incentivizes yaw toward target), the problem may be smaller than it looks. Watch several episodes and measure what fraction of approach steps have the coin significantly off-axis.
 
 **Decision point**: Watch the trained Stage 2/3 teacher carefully. If coin is frequently behind the camera during approach → Option 1 or 3. If rarely → Option 4 or 2.
+
+---
+
+## Full Curriculum Restart — v5 Redesign
+
+**Date:** 2026-04-22
+
+### Diagnosis of v1-v4 Curriculum Failures
+
+After reaching Stage 2 v4 (280K best model, 16/20 success, 4 immediate crashes) and observing the trained policy in the GUI, three root-cause issues were identified that justified a full restart rather than continued patching:
+
+**1. Stage 0 velocity_penalty caused deceleration transfer (primary)**
+
+Stage 0 v4 used `velocity_penalty=0.08 × |lateral_vel|` which penalises speed near the hover target. Over 10M training steps this baked a "near target = slow down" prior into the value function. This transferred through Stage 1 (120K steps, insufficient to override) and Stage 2 (280K steps before collapse). Observed in GUI: drone decelerates to near-zero at ~1m from each coin, then hovers extremely slowly for collection.
+
+Confirmed by literature (arXiv 2501.18490): keep reward structure consistent across stages; use action smoothness (‖Δa‖²) not velocity magnitude penalties in hover.
+
+**2. Stage 0 episode length (60s) allowed imprecise hover to pass threshold**
+
+With `max(0, 2-dist²)` reward: hovering at 0.5m yields 1.75/step × 14400 = 25,200 pts — near the 25,000 declared threshold. Policy correctly identified 0.4-0.5m as the effort/reward optimum and never learned tight position control. The transition to navigation stages carried this imprecision.
+
+Fix: 15-second episodes + `max(0, 2-4·dist²)` which zeros at 0.71m and gives 4× stronger gradient near origin.
+
+**3. No yaw alignment = CNN distillation failure guaranteed**
+
+Quadrotor omnidirectionality means the drone never needs to face the coin to collect it. Without explicit incentive, ~60-80% of near-target approach frames have the coin off-camera (estimated from FOV geometry). Since CNN student requires teacher actions to be recoverable from camera frames, an omnidirectional teacher generates unlearnable training data for a forward-camera student.
+
+Fix: `r_yaw = 0.15 × cos(θ_error)` at dist < 2.5m.
+
+**4. Trajectory squiggly — no velocity direction incentive**
+
+Pure progress reward (`50 × Δdist`) rewards any movement that closes distance, including sideways and backward approaches. No incentive for straight-line efficient paths.
+
+Fix: `r_dir = 0.20 × dot(v̂, û_target)` — trajectory constraint compatible with omnidirectionality.
+
+### New Design Summary
+
+| Component | Old (v4) | New (v5) |
+|---|---|---|
+| Hover reward | `max(0, 2-dist²)` | `max(0, 2-4·dist²)` |
+| Hover velocity term | `velocity_penalty=0.08` | `smoothness_penalty=0.05` |
+| Stage 0 max_steps | 14400 (60s) | 3600 (15s) |
+| Stage 0 threshold | 25000 | 6000 (~0.25m avg dist) |
+| Nav: approach zone | none | `+150 × progress` at dist < 1.5m |
+| Nav: yaw alignment | none | `+0.15 × cos(θ)` at dist < 2.5m |
+| Nav: trajectory | none | `+0.20 × dot(v̂, û_target)` |
+| Stage 0 run_name | Stage_0_Hover_v4 | Stage_0_Hover_v5 |
+| Stage 1 run_name | Stage_1_Scout_v1 | Stage_1_Scout_v2 |
+| Stage 2 run_name | Stage_2_Navigator_v4 | Stage_2_Navigator_v5 |
+
+Stage advancement criteria (manual enforcement):
+- Threshold exceeded in **3 consecutive evals** (not just one peak)
+- Max **1 early crash** per eval (episode < 1000 steps, negative reward)

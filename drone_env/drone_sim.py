@@ -453,7 +453,12 @@ class RoomDroneEnv(gym.Env):
 
         # Re-fetch state AFTER physics step for accurate reward computation
         drone_pos, ori = p.getBasePositionAndOrientation(self.drone_id)
-        drone_vel, _ = p.getBaseVelocity(self.drone_id)
+        drone_vel, _   = p.getBaseVelocity(self.drone_id)
+
+        # Body-frame velocity and compass — used by nav reward (yaw alignment,
+        # velocity direction). Compute once here rather than inside reward function.
+        rot_post = np.array(p.getMatrixFromQuaternion(ori)).reshape(3, 3)
+        local_vel_post = rot_post.T.dot(drone_vel)
 
         terminated = False
         truncated  = False
@@ -518,12 +523,12 @@ class RoomDroneEnv(gym.Env):
                 break
 
         # Hover-only: terminate if drone drifts too far from hover target.
-        # Beyond 1.5m, dist^2 reward is already 0 (breakeven=1.41m). Continuing
-        # the episode only wastes rollout steps with zero signal.
-        # No collision penalty — episode just resets cleanly.
+        # New reward max(0, 2-4·dist²) zeros at 0.71m. Terminating at 1.0m gives
+        # a small buffer beyond the zero-reward zone and triggers a fast reset when
+        # the episode is clearly failing. No collision penalty — clean reset.
         if self.hover_only and not terminated:
             hover_dist = math.sqrt(sum((drone_pos[i] - self.hover_target[i])**2 for i in range(3)))
-            if hover_dist > 1.5:
+            if hover_dist > 1.0:
                 terminated = True
 
         if self.current_step >= self.max_steps:
@@ -537,7 +542,7 @@ class RoomDroneEnv(gym.Env):
         if self.hover_only:
             reward = compute_hover_reward(
                 drone_pos, self.hover_target, drone_vel, current_pitch, current_roll,
-                local_ang_vel, is_collision, self.reward_weights
+                local_ang_vel, action_diff, is_collision, self.reward_weights
             )
         else:
             # FIX (Stage 0.20): Use clean (pre-noise) LiDAR for reward computation.
@@ -545,10 +550,24 @@ class RoomDroneEnv(gym.Env):
             # Extracting LiDAR from that noisy array passes hallucinated proximity
             # readings to the reward judge. Ground truth LiDAR is recomputed here.
             clean_lidar = self._compute_lidar(drone_pos, ori)
+
+            # Body-frame compass for yaw alignment and velocity direction rewards.
+            # Reuse rot_post already computed from post-physics ori.
+            if self.gold_data:
+                distances_r = [math.sqrt(sum((d - v)**2 for d, v in zip(drone_pos, g["pos"])))
+                                for g in self.gold_data]
+                nearest_pos = self.gold_data[int(np.argmin(distances_r))]["pos"]
+                global_rel  = np.array([g - d for g, d in zip(nearest_pos, drone_pos)])
+                local_rel_post = rot_post.T.dot(global_rel)
+            else:
+                local_rel_post = np.zeros(3)
+
             reward = compute_dense_reward(
                 drone_pos, drone_vel, action, current_distance,
                 is_collision, is_success, clean_lidar, coin_collected,
                 action_diff, coin_progress,
+                local_vel=local_vel_post,
+                local_relative_pos=local_rel_post,
                 reward_weights=self.reward_weights
             )
 
