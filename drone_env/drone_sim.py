@@ -11,7 +11,8 @@ from .reward_functions import compute_dense_reward, compute_hover_reward
 class RoomDroneEnv(gym.Env):
     def __init__(self, gui=False, num_obstacles=0, randomize_obstacles=False, randomize_coins=False,
                  reward_weights=None, hover_only=False, num_fixed_coins=4, fixed_spawn=False,
-                 max_steps=10800, coin_count_range=(10, 18), coin_z_range=(1.5, 2.5)):
+                 max_steps=10800, coin_count_range=(10, 18), coin_z_range=(1.5, 2.5),
+                 coin_spawn_radius=None):
         super().__init__()
 
         self.client = p.connect(p.GUI if gui else p.DIRECT)
@@ -30,6 +31,7 @@ class RoomDroneEnv(gym.Env):
         self.coin_count_range = coin_count_range  # (min, max) coins for randomize_coins=True
         self.coin_z_range = coin_z_range    # (z_min, z_max) for random coin Z placement
 
+        self.coin_spawn_radius = coin_spawn_radius  # if set, single coin spawns at random angle at this radius
         self.num_obstacles = num_obstacles
         self.randomize_obstacles = randomize_obstacles
         self.randomize_coins = randomize_coins
@@ -124,6 +126,19 @@ class RoomDroneEnv(gym.Env):
         self.gold_data = []
         
         if not self.randomize_coins:
+            # coin_spawn_radius: place single coin at random angle, fixed distance from origin.
+            # Used by Stage 1 to break the fixed +X direction while keeping Z=2m and a
+            # predictable distance. Forces genuine compass-driven flight rather than a memorized
+            # 1m drift toward a known world position.
+            if self.coin_spawn_radius is not None and self.num_fixed_coins == 1:
+                angle = self.np_random.uniform(0, 2 * math.pi)
+                pos = [self.coin_spawn_radius * math.cos(angle),
+                       self.coin_spawn_radius * math.sin(angle), 2.0]
+                vs = p.createVisualShape(p.GEOM_SPHERE, radius=0.12, rgbaColor=[1, 0.84, 0, 1])
+                gid = p.createMultiBody(baseMass=0, baseVisualShapeIndex=vs, basePosition=pos)
+                self.gold_data.append({"id": gid, "pos": pos})
+                return
+
             # First coin 1m from spawn (World [1,0,2]).
             # NOTE: Drone is Y-forward. At Yaw=0 this coin is to the drone's RIGHT (+X),
             # not ahead (+Y). Force-feeding benefit is proximity (~1m away), not direction.

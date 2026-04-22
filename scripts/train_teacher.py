@@ -3,9 +3,10 @@ import sys
 import shutil
 import argparse
 import yaml
+import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.callbacks import EvalCallback, StopTrainingOnRewardThreshold, BaseCallback, CallbackList
+from stable_baselines3.common.callbacks import EvalCallback, BaseCallback, CallbackList
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -70,6 +71,45 @@ class AutoArchiveBestCallback(BaseCallback):
             shutil.copy2(src_vecnorm, os.path.join(self.best_dir, "best_model_vecnormalize.pkl"))
         return True
 
+class ConsecutiveThresholdCallback(BaseCallback):
+    """
+    Stops training when n_required consecutive evals all exceed reward_threshold.
+    Checks evaluations.npz each eval interval rather than only on new-best events,
+    so it correctly counts even when reward oscillates below a new peak.
+    """
+    def __init__(self, reward_threshold: float, evaluations_path: str,
+                 n_required: int = 3, eval_freq: int = 10000, n_envs: int = 14,
+                 verbose: int = 1):
+        super().__init__(verbose)
+        self.reward_threshold = reward_threshold
+        self.evaluations_path = evaluations_path
+        self.n_required = n_required
+        self.check_interval = eval_freq * n_envs
+        self._last_checked = -1
+
+    def _on_step(self) -> bool:
+        if self.num_timesteps - self._last_checked < self.check_interval:
+            return True
+        self._last_checked = self.num_timesteps
+
+        npz_path = os.path.join(self.evaluations_path, "evaluations.npz")
+        if not os.path.exists(npz_path):
+            return True
+
+        means = np.load(npz_path)['results'].mean(axis=1)
+        if len(means) < self.n_required:
+            return True
+
+        last_n = means[-self.n_required:]
+        if all(m >= self.reward_threshold for m in last_n):
+            if self.verbose:
+                vals = ", ".join(f"{m:.1f}" for m in last_n)
+                print(f"\n[ConsecutiveThreshold] {self.n_required} consecutive evals "
+                      f">= {self.reward_threshold}: [{vals}] — stopping.")
+            return False
+        return True
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train Drone PPO with Curriculum Stages")
     parser.add_argument("--stage", type=int, default=0, help="Training stage level (0-6)")
@@ -91,8 +131,9 @@ if __name__ == "__main__":
     REWARD_THRESHOLD = stage_config.get('reward_threshold', 1600.0)
     MAX_STEPS        = stage_config.get('max_steps', 10800)
     TOTAL_TIMESTEPS  = stage_config.get('total_timesteps', 10_000_000)
-    COIN_COUNT_RANGE = tuple(stage_config.get('coin_count_range', [10, 18]))
-    COIN_Z_RANGE     = tuple(stage_config.get('coin_z_range', [1.5, 2.5]))
+    COIN_COUNT_RANGE  = tuple(stage_config.get('coin_count_range', [10, 18]))
+    COIN_Z_RANGE      = tuple(stage_config.get('coin_z_range', [1.5, 2.5]))
+    COIN_SPAWN_RADIUS = stage_config.get('coin_spawn_radius', None)
     reward_weights   = config['hover_rewards'] if HOVER_ONLY else config['nav_rewards']
     NUM_OBS    = stage_config['num_obstacles']
     RAND_OBS   = stage_config['randomize_obstacles']
@@ -137,6 +178,7 @@ if __name__ == "__main__":
                 max_steps=MAX_STEPS,
                 coin_count_range=COIN_COUNT_RANGE,
                 coin_z_range=COIN_Z_RANGE,
+                coin_spawn_radius=COIN_SPAWN_RADIUS,
             )
             monitor_path = os.path.join(stage_model_dir, "monitor.csv") if rank == 0 else None
             return Monitor(env, monitor_path)
@@ -156,6 +198,7 @@ if __name__ == "__main__":
         max_steps=MAX_STEPS,
         coin_count_range=COIN_COUNT_RANGE,
         coin_z_range=COIN_Z_RANGE,
+        coin_spawn_radius=COIN_SPAWN_RADIUS,
     )
     eval_env_mon = Monitor(eval_env_raw)
     eval_env_vec = DummyVecEnv([lambda e=eval_env_mon: e])
@@ -233,7 +276,6 @@ if __name__ == "__main__":
     callback_on_best = CallbackList([
         SaveVecNormOnBestCallback(save_path=stage_model_dir, vec_env=env),
         auto_archive,
-        StopTrainingOnRewardThreshold(reward_threshold=REWARD_THRESHOLD, verbose=1)
     ])
 
     eval_callback = EvalCallback(
@@ -247,10 +289,18 @@ if __name__ == "__main__":
         callback_on_new_best=callback_on_best
     )
 
+    consecutive_threshold = ConsecutiveThresholdCallback(
+        reward_threshold=REWARD_THRESHOLD,
+        evaluations_path=stage_model_dir,
+        n_required=3,
+        eval_freq=10000,
+        n_envs=N_ENVS,
+    )
+
     latest_model_path = os.path.join(stage_model_dir, "latest_model")
     save_latest_callback = SaveLatestCallback(save_path=latest_model_path, vec_env=env, save_freq=10000)
 
-    callback_list = CallbackList([sync_callback, eval_callback, save_latest_callback])
+    callback_list = CallbackList([sync_callback, eval_callback, consecutive_threshold, save_latest_callback])
 
     print(f"Training is live! {TOTAL_TIMESTEPS:,} steps, threshold={REWARD_THRESHOLD}")
     model.learn(

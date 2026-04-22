@@ -40,12 +40,14 @@ stages:
     randomize_coins: False
     hover_only: False
     num_fixed_coins: 1
-    max_steps: 7200           # 30s — 1 coin at 1m, should collect quickly
+    coin_spawn_radius: 2.0    # random angle each episode, fixed 2m radius — forces genuine
+                              # compass-driven navigation vs. memorized 1m drift to fixed +X
+    max_steps: 7200           # 30s — 2m coin at ~0.5m/s ≈ 4s flight, comfortable budget
     total_timesteps: 2000000
     reward_threshold: 800.0   # progress ~250 + coin 300 + approach ~200 + yaw ~50
 
   stage_2:
-    run_name: "Stage_2_Navigator_v5"
+    run_name: "Stage_2_Navigator_v4"
     num_obstacles: 0
     randomize_obstacles: False
     randomize_coins: False

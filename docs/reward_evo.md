@@ -1684,3 +1684,34 @@ Fix: `r_dir = 0.20 × dot(v̂, û_target)` — trajectory constraint compatible 
 Stage advancement criteria (manual enforcement):
 - Threshold exceeded in **3 consecutive evals** (not just one peak)
 - Max **1 early crash** per eval (episode < 1000 steps, negative reward)
+
+---
+
+## Stage 0 v5 — Declared Solved
+
+**Date:** 2026-04-22
+
+### Result
+
+| Eval | Steps (session 2) | Mean Reward | Ep Len | Full Episodes |
+|---|---|---|---|---|
+| 1 | 140,000 | 6,233.5 | 3600 | 20/20 |
+| 2 | 280,000 | 6,244.6 | 3600 | 20/20 |
+| 3 | 420,000 | 6,111.7 | 3600 | 20/20 |
+
+3 consecutive evals above threshold (6000) → `ConsecutiveThresholdCallback` fired. **Stage 0 v5 declared solved.**
+
+Total training: ~4.48M steps across 2 sessions (29 evals in session 1 + 3 in session 2).
+
+### What the numbers mean
+
+- **ep_len=3600 in all 60 eval episodes** (20/20 × 3 evals): drone held hover for the full 15 seconds every single time, zero early terminations.
+- **Mean ~6100–6250**: back-calculating via `2 − 4d² ≈ mean/3600 + penalty_offset` → average hover distance ~0.23–0.25m from target. Significantly tighter than v4's ~0.5m sweet spot.
+
+### What changed vs v4 (why this worked)
+
+The `4·dist²` scaling with 15s episodes removed the v4 perverse equilibrium where hovering at 0.5m was near-optimal. The `smoothness_penalty` replacing `velocity_penalty` removed the "decelerate near target" prior that had transferred destructively through Stage 1 and Stage 2 in the previous curriculum.
+
+### Decision: proceed to Stage 1
+
+Session 2 plateau was ~6100–6250 with LR decaying to 0 — no further improvement expected. 20/20 full episodes is the cleaner signal than the reward number. Stage 1 will validate whether hover quality is sufficient for navigation transfer.
