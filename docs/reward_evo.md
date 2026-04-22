@@ -1570,6 +1570,44 @@ For Stage 2 with 4 coins: theoretical max ≈ 4×300 + 1000 success + ~730 progr
 
 ---
 
+## Stage 3 — Hunter v1: Structural Failure (Z-Height Jump)
+
+**Date:** 2026-04-21 → 2026-04-22
+
+**Run:** `Stage_3_Hunter_v1` — 3.92M steps, 28 evals. Model deleted (failed run). Eval data preserved at `logs/teacher_ppo/stage_3/Stage_3_Hunter_v1/evaluations.npz`.
+
+### Config
+
+- 10–18 random coins, random Z ∈ [1.0, 6.0]m
+- max_steps: 10800 (45s)
+- N_ENVS: 14, started from Stage_2_Navigator_v4 best_model (280K, mean 1999)
+- reward_threshold: 2000
+
+### Results
+
+| Quarter | Evals | Avg mean R | Avg max R |
+|---|---|---|---|
+| Q1 (0–1M) | 7 | 6.9 | 674 |
+| Q2 (1–2M) | 7 | 5.6 | 720 |
+| Q3 (2–3M) | 7 | 36.8 | 665 |
+| Q4 (3–4M) | 7 | 45.3 | 779 |
+
+Coin collection across all 560 eval episodes: 46% crashed/collected nothing, 48% collected 0–1 coins, 4 episodes (0.7%) collected 2+ coins. Zero upward trend over 4M steps. Threshold 2000 never approached. Run stopped and declared a structural failure.
+
+### Root Cause: Two Simultaneous Hard Jumps
+
+**1. Z-height gap (primary):** Stage 2 coins were all at Z=2.0m — the drone learned to navigate in a flat XY plane at constant altitude. Stage 3 coins spawn at Z=1.0–6.0m. Coins at Z=4–6m require 2–4m of altitude gain while navigating — a skill the Stage 2 policy never needed and the compass Z component was effectively ignored. The LiDAR is also horizontal-only (gimbal-stabilized, yaw-only rotation), so it provides no information about coin altitude.
+
+**2. Fixed → random coin positions:** Stage 2 had 4 coins at known fixed positions. Stage 3 distributes 10–18 coins randomly across 16×16×5m = 1280m³. Even with 14 random coins that's ~91m³ per coin on average — a large 3D search space with no prior knowledge.
+
+The policy correctly generalized from Stage 1 to Stage 2 because the coin geometry was similar (familiar XY plane, incremental distances). The Stage 2→3 jump broke both the altitude invariant and the positional familiarity simultaneously.
+
+### Decision: Redesign Stage 3 as Separate Z-generalization Step
+
+Stage 3 v2 will constrain coins to Z ≈ 2.0m (same as Stage 2), forcing XY generalization only. Z navigation will be introduced at a later stage once XY search is mastered.
+
+---
+
 ## Distillation Readiness Note: Teacher Yaw Alignment Problem
 
 **Date:** 2026-04-21
