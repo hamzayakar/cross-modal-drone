@@ -28,7 +28,7 @@ stages:
     hover_only: False
     num_fixed_coins: 1
     reward_threshold: 600.0
-    run_name: "Stage_1_Scout"
+    run_name: "Stage_1_Scout_v1"
 
   stage_2:
     num_obstacles: 0
@@ -46,7 +46,7 @@ stages:
     hover_only: False
     num_fixed_coins: 4
     reward_threshold: 2000.0
-    run_name: "Stage_3_Hunter"
+    run_name: "Stage_3_Hunter_v2"
 
   stage_4:
     num_obstacles: 20

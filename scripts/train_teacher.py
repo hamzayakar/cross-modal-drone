@@ -98,16 +98,26 @@ if __name__ == "__main__":
     print(f"[{RUN_NAME}] Training Initialized (GUI Disabled for speed)...")
 
     # ── Directory layout ────────────────────────────────────────────────────────
-    # logs/teacher_ppo/stage_N/   ← TensorBoard events + evaluations.npz
-    # models/<RUN_NAME>/          ← best / latest / final weights + monitor.csv
-    # models/best/<RUN_NAME>/     ← auto-updated copy of peak checkpoint
+    # logs/teacher_ppo/stage_N/          ← TensorBoard events + evaluations.npz
+    # models/stage_N/<RUN_NAME>/         ← best / latest / final weights + monitor.csv
+    # models/best/<RUN_NAME>/            ← canonical peak checkpoint (auto-updated)
+    #
+    # Backward compat: Stage 3 and earlier ran before stage-subfolder convention.
+    # If models/stage_N/<RUN_NAME>/ is absent but models/<RUN_NAME>/ exists (old
+    # flat layout), the old path is used so in-progress runs are not broken.
     # ────────────────────────────────────────────────────────────────────────────
     base_dir    = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
     log_dir     = os.path.join(base_dir, 'logs', 'teacher_ppo', f'stage_{args.stage}')
     model_dir   = os.path.join(base_dir, 'models')
     best_dir    = os.path.join(model_dir, 'best')
 
-    stage_model_dir = os.path.join(model_dir, RUN_NAME)
+    new_stage_model_dir  = os.path.join(model_dir, f'stage_{args.stage}', RUN_NAME)
+    flat_stage_model_dir = os.path.join(model_dir, RUN_NAME)
+    if not os.path.exists(new_stage_model_dir) and os.path.exists(flat_stage_model_dir):
+        stage_model_dir = flat_stage_model_dir   # resume existing flat-layout run
+    else:
+        stage_model_dir = new_stage_model_dir    # new run uses stage-subfolder layout
+
     os.makedirs(log_dir, exist_ok=True)
     os.makedirs(stage_model_dir, exist_ok=True)
 
@@ -136,11 +146,19 @@ if __name__ == "__main__":
     eval_env_mon = Monitor(eval_env_raw)
     eval_env_vec = DummyVecEnv([lambda e=eval_env_mon: e])
 
+    prev_model_path   = ""
     prev_vecnorm_path = ""
     if args.stage > 0:
-        prev_stage_key  = f"stage_{args.stage - 1}"
-        prev_run_name   = config['stages'][prev_stage_key]['run_name']
-        prev_vecnorm_path = os.path.join(model_dir, prev_run_name, "best_model_vecnormalize.pkl")
+        prev_stage_key = f"stage_{args.stage - 1}"
+        prev_run_name  = config['stages'][prev_stage_key]['run_name']
+        # Always load previous stage from models/best/ — canonical, always current.
+        # Fall back to flat models/<RUN_NAME>/ for stages that predate best/ convention.
+        prev_model_path   = os.path.join(best_dir, prev_run_name, "best_model.zip")
+        prev_vecnorm_path = os.path.join(best_dir, prev_run_name, "best_model_vecnormalize.pkl")
+        if not os.path.exists(prev_model_path):
+            prev_model_path = os.path.join(model_dir, prev_run_name, "best_model.zip")
+        if not os.path.exists(prev_vecnorm_path):
+            prev_vecnorm_path = os.path.join(model_dir, prev_run_name, "best_model_vecnormalize.pkl")
 
     def linear_schedule(initial_value: float):
         def func(progress_remaining: float) -> float:
@@ -183,7 +201,6 @@ if __name__ == "__main__":
         env.training = True
         env.norm_reward = True
         env.gamma = 0.9995
-        prev_model_path = os.path.join(model_dir, prev_run_name, "best_model.zip")
         if os.path.exists(prev_model_path):
             print(f"Found previous brain ({prev_run_name})! Loading weights...")
             model = PPO.load(prev_model_path, env=env, tensorboard_log=log_dir, ent_coef=0.005,
@@ -213,7 +230,7 @@ if __name__ == "__main__":
     eval_callback = EvalCallback(
         eval_env,
         best_model_save_path=stage_model_dir,
-        log_path=log_dir,           # evaluations.npz → logs/teacher_ppo/stage_N/
+        log_path=stage_model_dir,   # evaluations.npz → models/stage_N/RUN_NAME/ (with monitor.csv)
         eval_freq=10000,
         n_eval_episodes=20,
         deterministic=True,
@@ -234,10 +251,21 @@ if __name__ == "__main__":
         reset_num_timesteps=True
     )
 
+    # Save final snapshot — captures the policy at the exact moment training ended.
+    # For threshold-stopped runs this ≈ best_model. For regressed runs this documents
+    # the degraded end state, which is useful evidence of catastrophic forgetting.
     final_model_path = os.path.join(stage_model_dir, f"teacher_ppo_{RUN_NAME}_final")
     model.save(final_model_path)
     env.save(f"{final_model_path}_vecnormalize.pkl")
-    print(f"Training complete! Final model and stats saved.")
+    # Save exact end-of-training snapshot, then remove latest_model (served nb05 during training).
+    final_model_path = os.path.join(stage_model_dir, "final_model")
+    model.save(final_model_path)
+    env.save(f"{final_model_path}_vecnormalize.pkl")
+    for ext in ['.zip', '_vecnormalize.pkl']:
+        fpath = latest_model_path + ext
+        if os.path.exists(fpath):
+            os.remove(fpath)
+    print(f"Training complete! Best: {stage_model_dir}/best_model.zip  Final: {final_model_path}.zip")
 
     env.close()
     eval_env.close()
