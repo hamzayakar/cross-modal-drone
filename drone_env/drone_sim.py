@@ -10,26 +10,26 @@ from .reward_functions import compute_dense_reward, compute_hover_reward
 
 class RoomDroneEnv(gym.Env):
     def __init__(self, gui=False, num_obstacles=0, randomize_obstacles=False, randomize_coins=False,
-                 reward_weights=None, hover_only=False, num_fixed_coins=4, fixed_spawn=False):
+                 reward_weights=None, hover_only=False, num_fixed_coins=4, fixed_spawn=False,
+                 max_steps=10800, coin_count_range=(10, 18), coin_z_range=(1.5, 2.5)):
         super().__init__()
-        
+
         self.client = p.connect(p.GUI if gui else p.DIRECT)
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
-        
+
         # Action space: 4-D [Target Pitch, Target Roll, Target Yaw Rate, Target Thrust]
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(4,), dtype=np.float32)
-        
+
         # Observation space: 50-D Ego-Centric State
         # 1 (Z-Altitude) + 2 (Roll, Pitch) + 2 (Sin/Cos Yaw) + 3 (Local Vel) +
         # 3 (Local Ang Vel) + 3 (Local Relative Pos) + 36 (LiDAR) = 50D
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(50,), dtype=np.float32)
-        
+
         self.room_bounds = [8.0, 8.0, 4.0]
-        self.max_steps = 10800  # 45 sim-seconds at 240Hz.
-        # 30s (7200) was too short for the old coin geometry (11.3m final leg).
-        # New coin positions reduce total path to ~13m → 26s minimum.
-        # 45s gives 1.7x margin, accommodates slow/non-optimal paths.
-        
+        self.max_steps = max_steps          # per-stage episode length, set via YAML
+        self.coin_count_range = coin_count_range  # (min, max) coins for randomize_coins=True
+        self.coin_z_range = coin_z_range    # (z_min, z_max) for random coin Z placement
+
         self.num_obstacles = num_obstacles
         self.randomize_obstacles = randomize_obstacles
         self.randomize_coins = randomize_coins
@@ -147,15 +147,14 @@ class RoomDroneEnv(gym.Env):
                 self.gold_data.append({"id": gid, "pos": pos})
             return
 
-        num_coins = np.random.randint(10, 18)
+        num_coins = np.random.randint(self.coin_count_range[0], self.coin_count_range[1])
         attempts = 0
-        
+
         while len(self.gold_data) < num_coins and attempts < 200:
             attempts += 1
-            # Z minimum 1.0 to prevent coins near the z<0.3 death zone
             pos = [np.random.uniform(-7.0, 7.0),
                    np.random.uniform(-7.0, 7.0),
-                   np.random.uniform(1.0, 6.0)]
+                   np.random.uniform(self.coin_z_range[0], self.coin_z_range[1])]
             
             if math.sqrt(pos[0]**2 + pos[1]**2 + (pos[2]-1.0)**2) < 1.0:
                 continue

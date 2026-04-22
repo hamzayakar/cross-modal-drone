@@ -3,86 +3,116 @@
 # ==========================================
 # Stage 0: Hover      — survive + hold Z=2.0. No coins. Flight foundation.
 # Stage 1: Scout      — 1 fixed coin 1m away. Basic compass following.
-# Stage 2: Navigator  — 4 fixed coins. Sequential navigation.
-# Stage 3: Hunter     — 10-18 random coins, no obstacles. Generalize search.
-# Stage 4: Pathfinder — 20 fixed obstacles + 4 fixed coins. Learn obstacle
-#                       avoidance with familiar coin locations (one new skill).
-# Stage 5: Pioneer    — 20 fixed obstacles + random coins. Combine avoidance+search.
+# Stage 2: Navigator  — 4 fixed coins in a ring. Sequential navigation.
+# Stage 3: Hunter     — 10-18 random coins at Z≈2m. Generalize XY search.
+# Stage 4: Pathfinder — 20 fixed obstacles + 4 fixed coins. Obstacle avoidance.
+# Stage 5: Pioneer    — 20 fixed obstacles + random coins. Avoidance + search.
 # Stage 6: Apex       — 20 random obstacles + random coins. Full mastery.
+#
+# Per-stage parameters:
+#   max_steps        — episode length in physics steps (240Hz). Set per stage
+#                      because hover/nav/obstacle stages need different budgets.
+#   total_timesteps  — training budget. Can be raised if a stage needs more.
+#   coin_count_range — [min, max] coins spawned when randomize_coins=True.
+#   coin_z_range     — [z_min, z_max] for random coin Z. Keep ≈2.0 until the
+#                      drone has mastered XY search, then widen for 3D navigation.
 # ==========================================
 stages:
   stage_0:
+    run_name: "Stage_0_Hover_v4"
     num_obstacles: 0
     randomize_obstacles: False
     randomize_coins: False
     hover_only: True
     num_fixed_coins: 0
     fixed_spawn: True
+    max_steps: 14400          # 60s — need long episodes to demonstrate stable hover
+    total_timesteps: 10000000
     reward_threshold: 27000.0
-    run_name: "Stage_0_Hover_v4"
 
   stage_1:
+    run_name: "Stage_1_Scout_v1"
     num_obstacles: 0
     randomize_obstacles: False
     randomize_coins: False
     hover_only: False
     num_fixed_coins: 1
+    max_steps: 7200           # 30s — 1 coin nearby, should collect quickly
+    total_timesteps: 2000000
     reward_threshold: 600.0
-    run_name: "Stage_1_Scout_v1"
 
   stage_2:
+    run_name: "Stage_2_Navigator_v4"
     num_obstacles: 0
     randomize_obstacles: False
     randomize_coins: False
     hover_only: False
     num_fixed_coins: 4
+    max_steps: 10800          # 45s — ~26s minimum path for 4-coin ring
+    total_timesteps: 10000000
     reward_threshold: 2000.0
-    run_name: "Stage_2_Navigator_v4"
 
   stage_3:
+    run_name: "Stage_3_Hunter_v2"
     num_obstacles: 0
     randomize_obstacles: False
     randomize_coins: True
     hover_only: False
-    num_fixed_coins: 4
+    num_fixed_coins: 4        # unused when randomize_coins=True
+    max_steps: 10800          # 45s
+    total_timesteps: 10000000
     reward_threshold: 2000.0
-    run_name: "Stage_3_Hunter_v2"
+    coin_count_range: [10, 18]
+    coin_z_range: [1.5, 2.5]  # v2: constrained to Z≈2m — XY generalization only
+                               # v1 used [1.0, 6.0] which caused Z-height failure
 
   stage_4:
+    run_name: "Stage_4_Pathfinder_v1"
     num_obstacles: 20
     randomize_obstacles: False
     randomize_coins: False
     hover_only: False
     num_fixed_coins: 4
+    max_steps: 14400          # 60s — obstacles slow navigation
+    total_timesteps: 10000000
     reward_threshold: 1500.0
-    run_name: "Stage_4_Pathfinder"
 
   stage_5:
+    run_name: "Stage_5_Pioneer_v1"
     num_obstacles: 20
     randomize_obstacles: False
     randomize_coins: True
     hover_only: False
     num_fixed_coins: 4
+    max_steps: 14400
+    total_timesteps: 10000000
     reward_threshold: 2000.0
-    run_name: "Stage_5_Pioneer"
+    coin_count_range: [10, 18]
+    coin_z_range: [1.5, 2.5]
 
   stage_6:
+    run_name: "Stage_6_Apex_v1"
     num_obstacles: 20
     randomize_obstacles: True
     randomize_coins: True
     hover_only: False
     num_fixed_coins: 4
+    max_steps: 14400
+    total_timesteps: 10000000
     reward_threshold: 2000.0
-    run_name: "Stage_6_Apex"
+    coin_count_range: [10, 18]
+    coin_z_range: [1.5, 4.0]  # Apex: wider Z range, full 3D navigation
 
 # ==========================================
 # HOVER REWARDS (Stage 0 only)
 # Goal: reach and hold hover_target [0, 0, 2.0].
-# Compass in obs always points to hover_target — same ego-centric structure
-# as nav stages (where target = nearest coin). Policy learns one skill:
-# "minimize the compass vector." In hover target is fixed; in nav it shifts
-# as coins are collected. No velocity_penalty: physics drag + tilt penalty
-# provide natural damping without biasing Stage 1+ toward slow movement.
+#
+# Reward = max(0, 2 - dist²) - tilt*(p²+r²) - ang_vel*|ω| - vel*√(vx²+vy²)
+#
+# dist² gives 50× stronger gradient near origin vs dist⁴ (v1).
+# tilt: moderate damping (0.5 was overdamped → 0.28m ceiling, 0.15 underdamped → drift).
+# velocity_penalty: penalises lateral motion directly, closes the drift/circular-orbit
+# loophole (v3 showed drone could maintain ~0.5m by drifting rather than converging).
 # ==========================================
 hover_rewards:
   hover_target: [0.0, 0.0, 2.0]
@@ -90,21 +120,20 @@ hover_rewards:
   angular_velocity_penalty: 0.05
   velocity_penalty: 0.08
   collision_penalty: 50.0
-  # alive_bonus and distance_penalty removed: reward is now max(0, 2 - dist^2).
-  # See reward_functions.py compute_hover_reward for details.
-  # Stage 0.27: upgraded from dist^4 → dist^2 for 50x stronger gradient near origin.
-  # Stage 0.28: tilt_penalty lowered 0.5 → 0.15 — caused underdamped oscillation/drift.
-  # Stage 0.29: velocity_penalty=0.08 added to penalise lateral motion directly.
-  #   tilt_penalty raised 0.15 → 0.27 for moderate damping without overdamped ceiling.
 
 # ==========================================
 # NAV REWARDS (Stage 1+)
+#
+# Progress reward replaced alive_bonus + distance_penalty after Stage 2 v1 collapsed
+# into alive-bonus farming. Old structure: alive=0.02 - 0.02*dist gave negative
+# per-step gradient at dist>1m → Suicide Policy at far coins (Stage 2 redesign).
+# New structure: reward = weight * (prev_dist - curr_dist).
+#   - Zero when hovering (not negative → no farming incentive)
+#   - Positive when approaching (always profitable)
+#   - Dying is always dominated by any forward progress
+# Literature: Kaufmann et al. 2023 (Swift, Nature) uses identical pure-progress reward.
 # ==========================================
 nav_rewards:
-  # Progress reward: replaces alive_bonus + distance_penalty (Stage 2 redesign).
-  # Old structure: alive=0.02 - 0.02*dist → negative per-step at dist>1m → Suicide Policy.
-  # New structure: +weight * (prev_dist - curr_dist) → always zero to collect, never negative for surviving.
-  # Literature: Kaufmann et al. 2023 (Swift, Nature) uses pure progress reward for drone navigation.
   progress_reward_weight: 50.0
   velocity_penalty_multiplier: 0.0
   smoothness_penalty_multiplier: 0.02

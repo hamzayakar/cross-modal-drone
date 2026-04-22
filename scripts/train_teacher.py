@@ -51,9 +51,9 @@ class SyncEvalEnvCallback(BaseCallback):
 
 class AutoArchiveBestCallback(BaseCallback):
     """
-    Automatically copies best_model to models/best/ whenever a new best is saved.
-    models/best/ always holds the peak checkpoint for each completed stage.
-    No manual copy ever needed.
+    Mirrors best_model to models/best/<run_name>/ whenever EvalCallback saves a new best.
+    models/best/ is the canonical cross-stage reference: train_teacher.py always loads
+    the previous stage weights from here, decoupled from working directory layout.
     """
     def __init__(self, stage_model_dir: str, best_dir: str, run_name: str):
         super().__init__()
@@ -62,7 +62,7 @@ class AutoArchiveBestCallback(BaseCallback):
 
     def _on_step(self) -> bool:
         os.makedirs(self.best_dir, exist_ok=True)
-        src_model  = os.path.join(self.stage_model_dir, "best_model.zip")
+        src_model   = os.path.join(self.stage_model_dir, "best_model.zip")
         src_vecnorm = os.path.join(self.stage_model_dir, "best_model_vecnormalize.pkl")
         if os.path.exists(src_model):
             shutil.copy2(src_model,   os.path.join(self.best_dir, "best_model.zip"))
@@ -89,35 +89,35 @@ if __name__ == "__main__":
     NUM_FIXED_COINS  = stage_config.get('num_fixed_coins', 4)
     FIXED_SPAWN      = stage_config.get('fixed_spawn', False)
     REWARD_THRESHOLD = stage_config.get('reward_threshold', 1600.0)
+    MAX_STEPS        = stage_config.get('max_steps', 10800)
+    TOTAL_TIMESTEPS  = stage_config.get('total_timesteps', 10_000_000)
+    COIN_COUNT_RANGE = tuple(stage_config.get('coin_count_range', [10, 18]))
+    COIN_Z_RANGE     = tuple(stage_config.get('coin_z_range', [1.5, 2.5]))
     reward_weights   = config['hover_rewards'] if HOVER_ONLY else config['nav_rewards']
-    NUM_OBS  = stage_config['num_obstacles']
-    RAND_OBS = stage_config['randomize_obstacles']
+    NUM_OBS    = stage_config['num_obstacles']
+    RAND_OBS   = stage_config['randomize_obstacles']
     RAND_COINS = stage_config['randomize_coins']
-    RUN_NAME = stage_config['run_name']
+    RUN_NAME   = stage_config['run_name']
 
     print(f"[{RUN_NAME}] Training Initialized (GUI Disabled for speed)...")
 
     # ── Directory layout ────────────────────────────────────────────────────────
-    # logs/teacher_ppo/stage_N/          ← TensorBoard events + evaluations.npz
-    # models/stage_N/<RUN_NAME>/         ← best / latest / final weights + monitor.csv
-    # models/best/<RUN_NAME>/            ← canonical peak checkpoint (auto-updated)
-    #
-    # Backward compat: Stage 3 and earlier ran before stage-subfolder convention.
-    # If models/stage_N/<RUN_NAME>/ is absent but models/<RUN_NAME>/ exists (old
-    # flat layout), the old path is used so in-progress runs are not broken.
+    # logs/teacher_ppo/stage_N/          ← TensorBoard events only (pure TB)
+    #   <RUN_NAME>_1/                    ← SB3 auto-creates session subdirs
+    # models/stage_N/<RUN_NAME>/         ← all run artifacts:
+    #   best_model.zip/pkl               ← peak checkpoint (EvalCallback)
+    #   latest_model.zip/pkl             ← live snapshot (SaveLatestCallback, deleted at end)
+    #   final_model.zip/pkl              ← exact end-of-training state
+    #   evaluations.npz                  ← per-eval reward/length arrays (EvalCallback)
+    #   monitor.csv                      ← per-episode training log (Monitor)
+    # models/best/<RUN_NAME>/            ← canonical cross-stage reference (AutoArchiveBestCallback)
     # ────────────────────────────────────────────────────────────────────────────
-    base_dir    = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-    log_dir     = os.path.join(base_dir, 'logs', 'teacher_ppo', f'stage_{args.stage}')
-    model_dir   = os.path.join(base_dir, 'models')
-    best_dir    = os.path.join(model_dir, 'best')
+    base_dir  = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    log_dir   = os.path.join(base_dir, 'logs', 'teacher_ppo', f'stage_{args.stage}')
+    model_dir = os.path.join(base_dir, 'models')
+    best_dir  = os.path.join(model_dir, 'best')
 
-    new_stage_model_dir  = os.path.join(model_dir, f'stage_{args.stage}', RUN_NAME)
-    flat_stage_model_dir = os.path.join(model_dir, RUN_NAME)
-    if not os.path.exists(new_stage_model_dir) and os.path.exists(flat_stage_model_dir):
-        stage_model_dir = flat_stage_model_dir   # resume existing flat-layout run
-    else:
-        stage_model_dir = new_stage_model_dir    # new run uses stage-subfolder layout
-
+    stage_model_dir = os.path.join(model_dir, f'stage_{args.stage}', RUN_NAME)
     os.makedirs(log_dir, exist_ok=True)
     os.makedirs(stage_model_dir, exist_ok=True)
 
@@ -125,40 +125,49 @@ if __name__ == "__main__":
 
     def make_env(rank):
         def _init():
-            env = RoomDroneEnv(gui=False, num_obstacles=NUM_OBS,
-                               randomize_obstacles=RAND_OBS,
-                               randomize_coins=RAND_COINS,
-                               reward_weights=reward_weights,
-                               hover_only=HOVER_ONLY,
-                               num_fixed_coins=NUM_FIXED_COINS,
-                               fixed_spawn=FIXED_SPAWN)
-            # monitor.csv lives with the model, not the log dir
+            env = RoomDroneEnv(
+                gui=False,
+                num_obstacles=NUM_OBS,
+                randomize_obstacles=RAND_OBS,
+                randomize_coins=RAND_COINS,
+                reward_weights=reward_weights,
+                hover_only=HOVER_ONLY,
+                num_fixed_coins=NUM_FIXED_COINS,
+                fixed_spawn=FIXED_SPAWN,
+                max_steps=MAX_STEPS,
+                coin_count_range=COIN_COUNT_RANGE,
+                coin_z_range=COIN_Z_RANGE,
+            )
             monitor_path = os.path.join(stage_model_dir, "monitor.csv") if rank == 0 else None
             return Monitor(env, monitor_path)
         return _init
 
     env_vec = SubprocVecEnv([make_env(i) for i in range(N_ENVS)])
 
-    eval_env_raw = RoomDroneEnv(gui=False, num_obstacles=NUM_OBS, randomize_obstacles=RAND_OBS,
-                                randomize_coins=RAND_COINS, reward_weights=reward_weights,
-                                hover_only=HOVER_ONLY, num_fixed_coins=NUM_FIXED_COINS,
-                                fixed_spawn=FIXED_SPAWN)
+    eval_env_raw = RoomDroneEnv(
+        gui=False,
+        num_obstacles=NUM_OBS,
+        randomize_obstacles=RAND_OBS,
+        randomize_coins=RAND_COINS,
+        reward_weights=reward_weights,
+        hover_only=HOVER_ONLY,
+        num_fixed_coins=NUM_FIXED_COINS,
+        fixed_spawn=FIXED_SPAWN,
+        max_steps=MAX_STEPS,
+        coin_count_range=COIN_COUNT_RANGE,
+        coin_z_range=COIN_Z_RANGE,
+    )
     eval_env_mon = Monitor(eval_env_raw)
     eval_env_vec = DummyVecEnv([lambda e=eval_env_mon: e])
 
+    # Previous stage: always load from models/best/ (canonical, layout-agnostic)
     prev_model_path   = ""
     prev_vecnorm_path = ""
     if args.stage > 0:
         prev_stage_key = f"stage_{args.stage - 1}"
         prev_run_name  = config['stages'][prev_stage_key]['run_name']
-        # Always load previous stage from models/best/ — canonical, always current.
-        # Fall back to flat models/<RUN_NAME>/ for stages that predate best/ convention.
         prev_model_path   = os.path.join(best_dir, prev_run_name, "best_model.zip")
         prev_vecnorm_path = os.path.join(best_dir, prev_run_name, "best_model_vecnormalize.pkl")
-        if not os.path.exists(prev_model_path):
-            prev_model_path = os.path.join(model_dir, prev_run_name, "best_model.zip")
-        if not os.path.exists(prev_vecnorm_path):
-            prev_vecnorm_path = os.path.join(model_dir, prev_run_name, "best_model_vecnormalize.pkl")
 
     def linear_schedule(initial_value: float):
         def func(progress_remaining: float) -> float:
@@ -196,7 +205,7 @@ if __name__ == "__main__":
                          learning_rate=linear_schedule(3e-4))
 
     elif args.stage > 0 and os.path.exists(prev_vecnorm_path):
-        print("Loading previous stage normalization statistics...")
+        print(f"Loading previous stage weights from: {prev_vecnorm_path}")
         env = VecNormalize.load(prev_vecnorm_path, env_vec)
         env.training = True
         env.norm_reward = True
@@ -230,7 +239,7 @@ if __name__ == "__main__":
     eval_callback = EvalCallback(
         eval_env,
         best_model_save_path=stage_model_dir,
-        log_path=stage_model_dir,   # evaluations.npz → models/stage_N/RUN_NAME/ (with monitor.csv)
+        log_path=stage_model_dir,   # evaluations.npz → models/stage_N/RUN_NAME/
         eval_freq=10000,
         n_eval_episodes=20,
         deterministic=True,
@@ -243,21 +252,17 @@ if __name__ == "__main__":
 
     callback_list = CallbackList([sync_callback, eval_callback, save_latest_callback])
 
-    print("Training is live! Monitor progress via TensorBoard.")
+    print(f"Training is live! {TOTAL_TIMESTEPS:,} steps, threshold={REWARD_THRESHOLD}")
     model.learn(
-        total_timesteps=10_000_000,
+        total_timesteps=TOTAL_TIMESTEPS,
         tb_log_name=RUN_NAME,
         callback=callback_list,
         reset_num_timesteps=True
     )
 
-    # Save final snapshot — captures the policy at the exact moment training ended.
-    # For threshold-stopped runs this ≈ best_model. For regressed runs this documents
-    # the degraded end state, which is useful evidence of catastrophic forgetting.
-    final_model_path = os.path.join(stage_model_dir, f"teacher_ppo_{RUN_NAME}_final")
-    model.save(final_model_path)
-    env.save(f"{final_model_path}_vecnormalize.pkl")
-    # Save exact end-of-training snapshot, then remove latest_model (served nb05 during training).
+    # Save exact end-of-training snapshot, then remove latest_model.
+    # latest_model served nb05 during training; final_model is its permanent form.
+    # For threshold runs final ≈ best. For regressed runs it captures the degraded state.
     final_model_path = os.path.join(stage_model_dir, "final_model")
     model.save(final_model_path)
     env.save(f"{final_model_path}_vecnormalize.pkl")
