@@ -44,8 +44,8 @@ stages:
                               # compass-driven navigation vs. memorized 1m drift to fixed +X
     max_steps: 7200           # 30s — 2m coin at ~0.5m/s ≈ 4s flight, comfortable budget
     total_timesteps: 2000000
-    reward_threshold: 1900.0  # yaw-aligned collect ~2216 pts; arc collect ~1622 pts (<1900,
-                              # fails even 20/20). Requires 19-20/20 quality collections.
+    reward_threshold: 1800.0  # w_yaw=0.3: yaw-aligned collect ~1902 pts; arc collect ~1442 pts
+                              # (<1800, fails even 20/20 arcing). Requires 19-20/20 quality.
 
   stage_2:
     run_name: "Stage_2_Navigator_v4"
@@ -152,7 +152,8 @@ nav_rewards:
   approach_bonus_dist: 1.5
   approach_bonus_requires_yaw: true   # unlock 3× multiplier only when cos(θ) > threshold
   approach_bonus_yaw_threshold: 0.5   # cos > 0.5 ≈ within 60° of coin (matches 120° FOV)
-  yaw_alignment_weight: 0.5           # was 0.15 — now comparable to approach signal (~0.4/step)
+  yaw_alignment_weight: 0.3           # 0.30/step — progress (0.40/step) dominates at long range;
+                                      # w≥0.5 risks yaw-lock (yaw > progress in pre-approach zone)
   yaw_alignment_dist: 2.5
   velocity_direction_weight: 0.20
   smoothness_penalty_multiplier: 0.03
