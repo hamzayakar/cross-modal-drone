@@ -1811,3 +1811,53 @@ Same environment as v2 (coin at random angle, 2m radius, Z=2m) with strengthened
 | No collect (crash) | ~50 | ~50 | ~20 | -300 | **~-180** |
 
 Threshold 1900 requires arcing to be eliminated. 19/20 good collects → mean ~2100 (passes). 18/20 → ~1984 (passes). Arc 20/20 → ~1622 (fails).
+
+---
+
+## Stage 1 v3 — Run Post-Mortem (stall-and-face exploit)
+
+**Date:** 2026-04-23
+
+### Result
+
+| Eval | Steps | Mean | Ep Len | 7200-step episodes |
+|---|---|---|---|---|
+| 1 | 140K | 1519 | 1274 | 0/20 |
+| 4 | 560K | 1812 | 1762 | — |
+| 6 | 840K | 2233 | 2716 | — |
+| 8 | 1120K | 2781 | **4156** | **7/20 full** |
+
+Correlation(ep_len, reward) = **0.817**. The drone learned that NOT collecting is more profitable than collecting: stalling while facing the coin earns `0.3 × 7200 = 2160` pts vs coin+success = 1300 pts.
+
+### Root Cause
+
+The per-step yaw reward is unbounded over the episode. When `yaw_weight × max_steps > collection_reward` → `0.3 × 7200 = 2160 > 1300`, stalling is a valid local optimum. The drone discovered: hover near coin at 0.7m (outside 0.6m collection radius), face it, accumulate yaw reward for 30 seconds, never collect.
+
+This is a fundamental design flaw of any per-step reward with fixed episode length: the total per-step reward scales with episode duration, while the terminal reward is fixed.
+
+### Fix for v4: `yaw_on_progress_only: true`
+
+Yaw reward fires **only when `coin_progress > 0`** (drone is actively closing distance). Hovering while facing → `coin_progress = 0` → yaw reward = 0. Stalling earns exactly 0 pts. The exploit disappears entirely.
+
+With stalling eliminated, `yaw_alignment_dist` is also extended from 2.5m to **5.0m**: the drone now faces the coin throughout the entire approach (not just the last 2.5m), which is required for the CNN student to see the coin in-camera during the full approach trajectory.
+
+---
+
+## Stage 1 v4 — Design (pre-training)
+
+**Date:** 2026-04-23
+
+All v3 changes retained, with:
+- `yaw_on_progress_only: true` — yaw fires only on positive coin_progress
+- `yaw_alignment_dist: 5.0` — extended from 2.5m (safe with progress gate)
+- `run_name: Stage_1_Scout_v4`
+- `reward_threshold: 1800` (unchanged — arc 1538 < 1800, good collect 2011 > 1800)
+
+### Stall-free reward math
+| Behavior | Yaw fires? | Total/ep |
+|---|---|---|
+| Good yaw-aligned collect | Yes (1120 approach steps) | ~2011 pts |
+| Arc collect | Yes but cos≈0.3 (1120 steps) | ~1538 pts |
+| Stall 7200s, no collect | **No** (no progress) | **0 pts** |
+
+Threshold 1800 definitively rejects both arc behavior and stalling.

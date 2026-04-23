@@ -34,7 +34,7 @@ stages:
     reward_threshold: 6000    # (2 - ~0.08 penalty) × 3600 ≈ 6912; 6000 ≈ avg dist < 0.25m
 
   stage_1:
-    run_name: "Stage_1_Scout_v3"
+    run_name: "Stage_1_Scout_v4"
     num_obstacles: 0
     randomize_obstacles: False
     randomize_coins: False
@@ -152,9 +152,12 @@ nav_rewards:
   approach_bonus_dist: 1.5
   approach_bonus_requires_yaw: true   # unlock 3× multiplier only when cos(θ) > threshold
   approach_bonus_yaw_threshold: 0.5   # cos > 0.5 ≈ within 60° of coin (matches 120° FOV)
-  yaw_alignment_weight: 0.3           # 0.30/step — progress (0.40/step) dominates at long range;
-                                      # w≥0.5 risks yaw-lock (yaw > progress in pre-approach zone)
-  yaw_alignment_dist: 2.5
+  yaw_alignment_weight: 0.3           # safe with yaw_on_progress_only=True (no stalling risk)
+  yaw_alignment_dist: 5.0             # extended from 2.5m: teacher faces coin throughout
+                                      # full approach, not just last 2.5m — required for CNN
+                                      # student to have coin in camera for entire approach
+  yaw_on_progress_only: true          # CRITICAL: yaw reward only fires when coin_progress>0
+                                      # eliminates stall-and-face exploit (w×max_steps > 1300)
   velocity_direction_weight: 0.20
   smoothness_penalty_multiplier: 0.03
   lidar_penalty_multiplier: 0.5

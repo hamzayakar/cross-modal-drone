@@ -100,12 +100,20 @@ def compute_dense_reward(drone_pos, drone_vel, action, current_distance, is_coll
     # ── Yaw alignment (CNN distillation readiness) ───────────────────────────
     # cos(θ) between body forward (+Y) and compass direction.
     # local_relative_pos[1] / dist = cos(θ_error).
-    # Only active near coin — no heading pressure during long-range transit.
-    yaw_weight = reward_weights.get('yaw_alignment_weight', 0.0)
-    yaw_dist   = reward_weights.get('yaw_alignment_dist', 2.5)
+    #
+    # yaw_on_progress_only=True (recommended): reward only fires when the drone
+    # is actively closing distance (coin_progress > 0). This eliminates the
+    # "stall-and-face" local optimum where the drone hovers near the coin while
+    # facing it to farm per-step yaw reward instead of collecting.
+    # With this gate, higher weights and longer distances are safe because
+    # hovering always gives zero yaw reward.
+    yaw_weight        = reward_weights.get('yaw_alignment_weight', 0.0)
+    yaw_dist          = reward_weights.get('yaw_alignment_dist', 2.5)
+    yaw_on_progress   = reward_weights.get('yaw_on_progress_only', False)
     if yaw_weight > 0 and local_relative_pos is not None and current_distance < yaw_dist and current_distance > 0.05:
-        cos_yaw = local_relative_pos[1] / current_distance
-        reward += yaw_weight * cos_yaw
+        if not yaw_on_progress or coin_progress > 1e-4:
+            cos_yaw = local_relative_pos[1] / current_distance
+            reward += yaw_weight * cos_yaw
 
     # ── Velocity direction alignment (trajectory straightness) ───────────────
     # Rewards moving toward the coin, independent of heading.
