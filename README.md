@@ -4,14 +4,14 @@ PyBullet-based quadrotor simulation for curriculum reinforcement learning. A PPO
 
 ## Current Status
 
-**Stage 3 (Hunter)** — in progress. Collecting 10–18 random coins in a coin-dense room.
+**Stage 1 (Scout v3)** — retraining with yaw-conditional approach bonus. Full v5 curriculum restart after diagnosing deceleration prior and arc-trajectory failures in v4.
 
 | Stage | Name | Status | Result |
 |---|---|---|---|
-| 0 | Hover | ✓ Solved | v4, ~10M steps, mean 25.6K, 20/20 full episodes |
-| 1 | Scout | ✓ Solved | 120K steps, mean 1299, 20/20 — instant transfer from Stage 0 |
-| 2 | Navigator | ✓ Solved | v4 280K best model, 16/20 all-4-coin collection |
-| 3 | Hunter | ◉ Training | 10–18 random coins at random heights (Z: 1–6m) |
+| 0 | Hover | ✓ Solved | v5, ~4.48M steps, mean ~6200, 20/20 × 3 consec evals |
+| 1 | Scout | ◉ Retraining | v3: yaw-conditional approach bonus, threshold 1900 |
+| 2 | Navigator | — | 4 fixed coins in a ring, v5 rewards |
+| 3 | Hunter | — | 10–18 random coins, Z∈[1.5,2.5]m (XY generalization only) |
 | 4 | Pathfinder | — | 20 fixed obstacles + 4 fixed coins |
 | 5 | Pioneer | — | 20 fixed obstacles + random coins |
 | 6 | Apex | — | 20 random obstacles + random coins |
@@ -66,14 +66,17 @@ Non-negative by design: staying alive is always ≥ crashing. The dist² gradien
 
 **Stage 1+ (Navigation):**
 ```
-R = progress_weight × (prev_dist − curr_dist)   ← metres closed toward nearest coin × 50
+R = progress_weight × (prev_dist − curr_dist)          ← metres closed toward nearest coin × 50
+  + approach_bonus × (prev_dist − curr_dist)            [+150×Δdist when dist<1.5m AND cos(θ)>0.5]
+  + yaw_alignment_weight × cos(θ_error)                 [+0.5×cos(θ) when dist<2.5m]
+  + velocity_direction_weight × dot(v̂, û_target)       [+0.20 when moving toward coin]
   − smoothness_penalty × mean(Δaction²)
   − lidar_penalty      × max(0, 0.1 − min_lidar)
-  + coin_reward                                  [+300 per coin collected]
-  + success_bonus                                [+1000 if all coins collected]
-  − collision_penalty                            [−300 if crash]
+  + coin_reward                                          [+300 per coin collected]
+  + success_bonus                                        [+1000 if all coins collected]
+  − collision_penalty                                    [−300 if crash]
 ```
-The progress reward replaced `alive_bonus − dist_penalty × dist` after Stage 2 collapsed. The old structure gave a negative per-step gradient at distances > 1m (alive=0.02, penalty=0.02×d → breakeven at 1m), making suicide economically optimal for coins 3–4 at 5.66m. Literature: Kaufmann et al. 2023 (Swift, Nature) uses identical pure-progress reward for champion-level drone racing.
+**Approach bonus is yaw-conditional**: the 3× multiplier at dist<1.5m only fires when the drone faces the coin within 60° (`cos(θ) > 0.5`). Arc trajectories lose the multiplier (~70 pts instead of 205 pts progress), enforcing face-first navigation without PD override. Literature: Penicka et al. ICRA 2023 (arXiv 2210.01841) validates perception-aware reward shaping for camera-compatible teacher training.
 
 ## Key Hyperparameters
 

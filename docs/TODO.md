@@ -23,7 +23,35 @@
 
 ---
 
-## 4. Stage 1 Role — Accept Trivial Solve
+## 4. Arc-Trajectory Failure — Diagnosed and Fixed (2026-04-23)
+
+**What happened:** Stage 1 v2 trained with yaw_alignment_weight=0.15. The drone collected coins via arc paths, circles, and sideways approaches. Root cause: approach_bonus (200×Δdist/step ≈ 0.42/step) dominated yaw signal (0.15/step). Drone maximized reward by omnidirectional drift — correct behavior for the reward, wrong behavior for CNN distillation.
+
+**Fix implemented:**
+1. `approach_bonus_requires_yaw: true` — 3× approach multiplier only fires when cos(θ) > 0.5 (facing within 60°). Arc behavior loses multiplier: ~1622 pts/ep vs ~2216 pts/ep for good behavior. Arc behavior cannot pass threshold 1900 even 20/20.
+2. `yaw_alignment_weight: 0.5` (was 0.15) — now magnitude-comparable to approach signal.
+
+**Virtual FOV (rejected):** Evaluated PD-spin-override state machine. Rejected: breaks PPO on-policy assumption, restricted state distribution. Soft reward approach is literature standard (Penicka ICRA 2023, arXiv 2210.01841).
+
+**Stage 1 v3:** threshold=1900, same env (2m random-angle coin), fresh start from Stage_0_Hover_v5.
+
+---
+
+## 8. Why RL (permanent reference note)
+
+**Question:** Why use RL if PD controllers can handle much of the flight?
+
+**Answer:** PD requires explicit setpoints (`PD = Kp × (target − current)`). Camera pixels are not setpoints. With camera-only navigation:
+- Coin positions unknown until detected — detection→localization→setpoint is a full separate pipeline
+- Random obstacles require generalization PD can't provide without explicit maps  
+- When target not visible, PD has no search policy — it simply fails
+- End-to-end RL learns perception + control jointly from reward signal
+
+The PD controller IS used in this project — as the low-level stabilizer at 240Hz (the "cerebellum"). RL is the high-level navigator (the "cortex"). Without RL, the student CNN would require a separate object detection stack and explicit path planner, making it a classical SLAM pipeline — not the end-to-end neural agent that this thesis is about.
+
+---
+
+## 5. Stage 1 Role — Accept Trivial Solve
 
 **Design note (from literature synthesis, 2026-04-22):** Stage 1's purpose is to validate the hover→nav transfer, not to train new skills. Müller et al. (arXiv 2501.18490) skip the 1m step entirely. The v5 implementation uses a coin at random angle, 2m radius — this forces genuine compass-driven flight rather than a 1m drift. Expect solve in ~140–280K steps; advance immediately.
 

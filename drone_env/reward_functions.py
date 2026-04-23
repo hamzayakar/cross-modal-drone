@@ -80,12 +80,22 @@ def compute_dense_reward(drone_pos, drone_vel, action, current_distance, is_coll
     reward += progress_weight * coin_progress
 
     # ── Approach bonus (hover-transfer fix) ─────────────────────────────────
-    # Activates only in the final approach zone where the Stage 0 deceleration
-    # prior is strongest. Multiplies the progress signal to overpower it.
-    approach_bonus_weight = reward_weights.get('approach_bonus_weight', 0.0)
-    approach_bonus_dist   = reward_weights.get('approach_bonus_dist', 1.5)
+    # Activates in the final approach zone to overpower the Stage 0 deceleration prior.
+    # When approach_bonus_requires_yaw=True, the 3× multiplier only fires when the drone
+    # is facing the coin within approach_bonus_yaw_threshold (cos > 0.5 ≈ within 60°).
+    # This enforces "face first, then fly": sideway arcing loses the multiplier and gets
+    # only 50×Δdist instead of 200×Δdist — effectively penalising arc trajectories.
+    approach_bonus_weight    = reward_weights.get('approach_bonus_weight', 0.0)
+    approach_bonus_dist      = reward_weights.get('approach_bonus_dist', 1.5)
+    approach_requires_yaw    = reward_weights.get('approach_bonus_requires_yaw', False)
+    approach_yaw_threshold   = reward_weights.get('approach_bonus_yaw_threshold', 0.5)
     if approach_bonus_weight > 0 and current_distance < approach_bonus_dist:
-        reward += approach_bonus_weight * coin_progress
+        yaw_ok = True
+        if approach_requires_yaw and local_relative_pos is not None and current_distance > 0.05:
+            cos_yaw = local_relative_pos[1] / current_distance
+            yaw_ok = cos_yaw > approach_yaw_threshold
+        if yaw_ok:
+            reward += approach_bonus_weight * coin_progress
 
     # ── Yaw alignment (CNN distillation readiness) ───────────────────────────
     # cos(θ) between body forward (+Y) and compass direction.

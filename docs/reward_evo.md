@@ -1715,3 +1715,99 @@ The `4·dist²` scaling with 15s episodes removed the v4 perverse equilibrium wh
 ### Decision: proceed to Stage 1
 
 Session 2 plateau was ~6100–6250 with LR decaying to 0 — no further improvement expected. 20/20 full episodes is the cleaner signal than the reward number. Stage 1 will validate whether hover quality is sufficient for navigation transfer.
+
+---
+
+## Stage 1 v2 — Design (pre-training)
+
+**Date:** 2026-04-22
+
+### What changed vs Stage 1 v1
+
+| Component | v1 | v2 |
+|---|---|---|
+| Coin position | Fixed `[1.0, 0.0, 2.0]` (always +X, 1m) | Random angle, fixed 2m radius from origin |
+| Effective nav challenge | Hover-drift to memorized position | Must use compass to navigate to unknown direction |
+| Nav rewards | Progress only (from Stage 0.23) | Progress + approach_bonus + yaw_alignment + velocity_direction |
+| Episode length | 30s (7200 steps) | 30s (7200 steps, unchanged) |
+| Threshold | 800 | 800 |
+
+### Reward math (2m coin, clean collect)
+
+- Long-range progress (2m → 1.5m): 50 × 0.5 = **25 pts**
+- Approach zone (1.5m → 0.6m): 200 × 0.9 = **180 pts**
+- Coin collection: **300 pts**
+- Success bonus: **1000 pts**
+- Yaw alignment (~600 steps at <2.5m, cos≈0.8): **~72 pts**
+- Velocity direction (~600 steps, dot≈0.8): **~96 pts**
+- **Total clean collect: ~1673 pts**
+
+Threshold 800 requires ~8/20 episode collections. Stage 0 v5 compass skill should transfer directly; expect 10-18/20 from the first eval.
+
+### Expectation
+
+Near-zero-shot transfer is likely but not guaranteed. v1 was fully zero-shot because the coin was within hover-drift range (1m). v2 coin at 2m genuinely requires departure from hover zone — the drone must commit to directional flight. The approach_bonus (+150×progress at <1.5m) counters any residual deceleration prior. The yaw alignment reward starts training here for the first time.
+
+Expected outcome: solved in 1–4 evals (140–560K steps). If threshold is not hit by eval 3, something structural is wrong with the hover→nav transfer.
+
+---
+
+## Stage 1 v2 — Run 1 Post-Mortem (arc-trajectory failure)
+
+**Date:** 2026-04-23
+
+### Result
+
+| Eval | Steps | Mean Reward | Ep Len | Notes |
+|---|---|---|---|---|
+| 1 | 140K | 1508.7 | 1270 | Collecting, but arcing |
+| 2 | 280K | 1400.0 | 1340 | Same |
+| 3 | 420K | 1439.4 | 1500 | Same — threshold 800 passed, training stopped |
+
+Threshold 800 was passed (3 consecutive) → training stopped. But observed behavior in the GUI revealed the drone consistently **collected the coin via arc trajectories**: curved paths, circles around collection radius, stops and reaccelerations, sideways/backward approaches. The yaw alignment metric was effectively ignored.
+
+### Root Cause
+
+The yaw alignment reward (`0.15 × cos(θ)`) was **~3× weaker** than the approach bonus signal (`200 × Δdist/step ≈ 0.42/step` at 0.5m/s). The drone maximized distance-closure by flying sideways (omnidirectional quadrotor) — no yaw required. The arcs are locally optimal paths for approach bonus exploitation. The threshold of 800 was also too low: arc behavior still collected 20/20 and hit 1500+ mean.
+
+### What Changed for v3
+
+Two changes together enforce "face-first, then fly":
+
+**1. Conditional approach_bonus** (`approach_bonus_requires_yaw: true`, `threshold: 0.5`):
+The 3× approach multiplier only fires when `cos(θ) > 0.5` (coin within 60° of drone nose). Arc trajectories lose the multiplier: reward drops from ~205 pts progress to ~70 pts. Arcing behavior cannot pass threshold 1900 even with 20/20 collections (~1622 pts/episode < 1900).
+
+**2. Yaw alignment weight**: `0.15 → 0.5` — now comparable in magnitude to approach signal. Each step of good yaw alignment (~0.5 pts) is meaningful relative to approach bonus (~0.42 pts).
+
+Literature anchor: Penicka et al. ICRA 2023 (arXiv 2210.01841) — perception-aware reward shaping for camera-compatible teacher training.
+
+### Virtual FOV / PD-override proposal (evaluated and rejected)
+
+The idea of suppressing the compass target when no coin is in FOV and having a PD controller forcibly spin the drone was evaluated via wiki literature search. Rejected because:
+1. PPO is on-policy — steps where PD overrides yaw produce invalid importance ratios in the rollout buffer
+2. Restricted state distribution: RL never learns to turn on its own
+3. Mode-transition jitter at PD→RL handoff creates out-of-distribution states
+
+The soft reward approach (conditional approach_bonus + higher yaw weight) achieves the same behavioral goal without hybrid control.
+
+---
+
+## Stage 1 v3 — Design (pre-training)
+
+**Date:** 2026-04-23
+
+Same environment as v2 (coin at random angle, 2m radius, Z=2m) with strengthened rewards:
+- `yaw_alignment_weight`: 0.15 → **0.5**
+- `approach_bonus_requires_yaw`: **true** (new — unlocks 3× only when cos > 0.5)
+- `reward_threshold`: 800 → **1900**
+- `run_name`: Stage_1_Scout_v3 (fresh start from Stage_0_Hover_v5 weights)
+
+### Expected reward structure
+
+| Behavior | Progress | Yaw | Vel | Coin+Success | Total/ep |
+|---|---|---|---|---|---|
+| Good (yaw-aligned, 0.3m/s) | 205 | ~515 | ~197 | 1300 | **~2216** |
+| Arc (not facing coin) | 70 | ~180 | ~72 | 1300 | **~1622** |
+| No collect (crash) | ~50 | ~50 | ~20 | -300 | **~-180** |
+
+Threshold 1900 requires arcing to be eliminated. 19/20 good collects → mean ~2100 (passes). 18/20 → ~1984 (passes). Arc 20/20 → ~1622 (fails).
