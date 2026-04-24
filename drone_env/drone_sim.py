@@ -6,13 +6,14 @@ import numpy as np
 import math
 import os
 
-from .reward_functions import compute_dense_reward, compute_hover_reward
+from .reward_functions import compute_dense_reward, compute_hover_reward, compute_face_reward
 
 class RoomDroneEnv(gym.Env):
     def __init__(self, gui=False, num_obstacles=0, randomize_obstacles=False, randomize_coins=False,
                  reward_weights=None, hover_only=False, num_fixed_coins=4, fixed_spawn=False,
                  max_steps=10800, coin_count_range=(10, 18), coin_z_range=(1.5, 2.5),
-                 coin_spawn_radius=None):
+                 coin_spawn_radius=None, face_only=False, face_spawn_radius=3.0,
+                 face_threshold=0.95, face_consecutive_steps=10):
         super().__init__()
 
         self.client = p.connect(p.GUI if gui else p.DIRECT)
@@ -31,7 +32,14 @@ class RoomDroneEnv(gym.Env):
         self.coin_count_range = coin_count_range  # (min, max) coins for randomize_coins=True
         self.coin_z_range = coin_z_range    # (z_min, z_max) for random coin Z placement
 
-        self.coin_spawn_radius = coin_spawn_radius  # if set, single coin spawns at random angle at this radius
+        self.coin_spawn_radius = coin_spawn_radius
+        # Face-only mode (Stage 1 FaceIt): drone learns pure yaw alignment before navigation.
+        # hover_only must also be True so the compass observation points to the face target.
+        self.face_only = face_only
+        self.face_spawn_radius = face_spawn_radius      # distance to virtual face target
+        self.face_threshold = face_threshold            # cos(θ) required for success
+        self.face_consecutive_steps = face_consecutive_steps  # steps to hold facing
+        self._face_streak = 0
         self.num_obstacles = num_obstacles
         self.randomize_obstacles = randomize_obstacles
         self.randomize_coins = randomize_coins
@@ -196,7 +204,18 @@ class RoomDroneEnv(gym.Env):
         p.setTimeStep(1.0 / 240.0)
         self.current_step = 0
         self.prev_action = np.zeros(4, dtype=np.float32)
-        
+        self._face_streak = 0
+
+        # Face-only: randomize the face target each episode so the drone cannot memorize
+        # a fixed direction. hover_target is used as the compass anchor in _get_obs().
+        if self.face_only:
+            angle = self.np_random.uniform(0, 2 * math.pi)
+            self.hover_target = [
+                self.face_spawn_radius * math.cos(angle),
+                self.face_spawn_radius * math.sin(angle),
+                2.0
+            ]
+
         self.plane_id = p.loadURDF("plane.urdf")
         self._build_closed_room()
         self._spawn_obstacles()
@@ -537,11 +556,24 @@ class RoomDroneEnv(gym.Env):
                 terminated   = True
                 break
 
-        # Hover-only: terminate if drone drifts too far from hover target.
-        # New reward max(0, 2-4·dist²) zeros at 0.71m. Terminating at 1.0m gives
-        # a small buffer beyond the zero-reward zone and triggers a fast reset when
-        # the episode is clearly failing. No collision penalty — clean reset.
-        if self.hover_only and not terminated:
+        # Face-only: check yaw alignment streak for success. No drift termination —
+        # the drone may hover anywhere near the center while turning.
+        if self.face_only and not terminated:
+            global_face = np.array(self.hover_target) - np.array(drone_pos)
+            face_dist = np.linalg.norm(global_face)
+            if face_dist > 0.05:
+                cos_to_target = rot_post.T.dot(global_face)[1] / face_dist  # body +Y forward
+                if cos_to_target > self.face_threshold:
+                    self._face_streak += 1
+                else:
+                    self._face_streak = 0
+                if self._face_streak >= self.face_consecutive_steps:
+                    is_success = True
+                    terminated = True
+
+        # Hover-only (not face_only): terminate if drone drifts too far from hover target.
+        # max(0, 2-4·dist²) zeros at 0.71m; 1.0m gives a buffer and triggers fast reset.
+        if self.hover_only and not self.face_only and not terminated:
             hover_dist = math.sqrt(sum((drone_pos[i] - self.hover_target[i])**2 for i in range(3)))
             if hover_dist > 1.0:
                 terminated = True
@@ -554,7 +586,16 @@ class RoomDroneEnv(gym.Env):
         info['is_success'] = is_success
 
         # Compute Reward
-        if self.hover_only:
+        if self.face_only:
+            global_face = np.array(self.hover_target) - np.array(drone_pos)
+            face_dist = np.linalg.norm(global_face)
+            cos_theta = (rot_post.T.dot(global_face)[1] / face_dist) if face_dist > 0.05 else 0.0
+            euler_post = p.getEulerFromQuaternion(ori)
+            reward = compute_face_reward(
+                cos_theta, euler_post[1], euler_post[0], local_ang_vel,
+                action_diff, is_success, self.reward_weights
+            )
+        elif self.hover_only:
             reward = compute_hover_reward(
                 drone_pos, self.hover_target, drone_vel, current_pitch, current_roll,
                 local_ang_vel, action_diff, is_collision, self.reward_weights

@@ -1,6 +1,40 @@
 import numpy as np
 
 
+def compute_face_reward(cos_theta, body_pitch, body_roll, local_ang_vel,
+                        action_diff, is_success, reward_weights):
+    """
+    Stage 1 (FaceIt) reward — pure yaw alignment skill.
+
+    Teaches the drone to rotate in place to face a virtual target before
+    any navigation is introduced. Eliminates the lateral-slide attractor
+    that occurs when yaw alignment is learned simultaneously with approach.
+
+    Reward = face_weight * cos(theta_error)
+           - tilt_penalty*(pitch²+roll²)
+           - angular_velocity_penalty*|ω|
+           - smoothness_penalty*mean(Δa²)
+           + success_bonus  [when stably facing for face_consecutive_steps]
+
+    Design: face_weight=0.5, max_steps=1200 ensures:
+      stall_reward (cos=0.93, 1200 steps) = 0.5*1200*0.93 = 558 pts
+      success_reward = 0.5*~400*0.45 + 1000 = ~1090 pts
+      success > stall → no stalling exploit
+    """
+    face_weight = reward_weights.get('face_weight', 0.5)
+    reward = face_weight * float(cos_theta)
+
+    tilt = body_pitch ** 2 + body_roll ** 2
+    reward -= reward_weights.get('tilt_penalty', 0.27) * tilt
+    reward -= reward_weights.get('angular_velocity_penalty', 0.05) * np.linalg.norm(local_ang_vel)
+    reward -= reward_weights.get('smoothness_penalty', 0.05) * action_diff
+
+    if is_success:
+        reward += reward_weights.get('success_bonus', 1000.0)
+
+    return reward
+
+
 def compute_hover_reward(drone_pos, target_pos, drone_vel, body_pitch, body_roll,
                          local_ang_vel, action_diff, is_collision, reward_weights):
     """
@@ -75,45 +109,39 @@ def compute_dense_reward(drone_pos, drone_vel, action, current_distance, is_coll
 
     reward = 0.0
 
+    # ── Alignment² soft gate ─────────────────────────────────────────────────
+    # Multiplies both progress reward and approach bonus by max(0, cos(θ))².
+    # Continuous soft gate: lateral slide (θ=90°)→0 reward; 45° off→50%; facing→100%.
+    # No zero-gradient boundary: the drone always has signal to reduce yaw error.
+    # With Stage 1 FaceIt providing a turning prior, this enforces face-then-fly
+    # without the zero-gradient trap of boolean conditions.
+    alignment_factor = 1.0
+    if reward_weights.get('progress_uses_alignment', False) and \
+            local_relative_pos is not None and current_distance > 0.05:
+        _cos = local_relative_pos[1] / current_distance
+        alignment_factor = max(0.0, _cos) ** 2
+
     # ── Progress reward ──────────────────────────────────────────────────────
     progress_weight = reward_weights.get('progress_reward_weight', 50.0)
-    reward += progress_weight * coin_progress
+    reward += progress_weight * coin_progress * alignment_factor
 
-    # ── Approach bonus (hover-transfer fix) ─────────────────────────────────
-    # Activates in the final approach zone to overpower the Stage 0 deceleration prior.
-    # When approach_bonus_requires_yaw=True, the 3× multiplier only fires when the drone
-    # is facing the coin within approach_bonus_yaw_threshold (cos > 0.5 ≈ within 60°).
-    # This enforces "face first, then fly": sideway arcing loses the multiplier and gets
-    # only 50×Δdist instead of 200×Δdist — effectively penalising arc trajectories.
-    approach_bonus_weight    = reward_weights.get('approach_bonus_weight', 0.0)
-    approach_bonus_dist      = reward_weights.get('approach_bonus_dist', 1.5)
-    approach_requires_yaw    = reward_weights.get('approach_bonus_requires_yaw', False)
-    approach_yaw_threshold   = reward_weights.get('approach_bonus_yaw_threshold', 0.5)
+    # ── Approach bonus ───────────────────────────────────────────────────────
+    # Uses the same alignment_factor — suppressed for off-axis approaches.
+    approach_bonus_weight = reward_weights.get('approach_bonus_weight', 0.0)
+    approach_bonus_dist   = reward_weights.get('approach_bonus_dist', 1.5)
     if approach_bonus_weight > 0 and current_distance < approach_bonus_dist:
-        yaw_ok = True
-        if approach_requires_yaw and local_relative_pos is not None and current_distance > 0.05:
-            cos_yaw = local_relative_pos[1] / current_distance
-            yaw_ok = cos_yaw > approach_yaw_threshold
-        if yaw_ok:
-            reward += approach_bonus_weight * coin_progress
+        reward += approach_bonus_weight * coin_progress * alignment_factor
 
     # ── Yaw alignment (CNN distillation readiness) ───────────────────────────
-    # cos(θ) between body forward (+Y) and compass direction.
-    # local_relative_pos[1] / dist = cos(θ_error).
-    #
-    # yaw_on_progress_only=True (recommended): reward only fires when the drone
-    # is actively closing distance (coin_progress > 0). This eliminates the
-    # "stall-and-face" local optimum where the drone hovers near the coin while
-    # facing it to farm per-step yaw reward instead of collecting.
-    # With this gate, higher weights and longer distances are safe because
-    # hovering always gives zero yaw reward.
-    yaw_weight        = reward_weights.get('yaw_alignment_weight', 0.0)
-    yaw_dist          = reward_weights.get('yaw_alignment_dist', 2.5)
-    yaw_on_progress   = reward_weights.get('yaw_on_progress_only', False)
+    # Small always-active yaw reward provides the turning gradient that lets the
+    # drone discover face-first behavior. Weight is kept low (0.10) so that
+    # w × max_steps = 0.10 × 7200 = 720 < 1300 (coin+success): no stalling incentive.
+    # NOT progress-gated so turning in place (coin_progress=0) still gets gradient.
+    yaw_weight = reward_weights.get('yaw_alignment_weight', 0.0)
+    yaw_dist   = reward_weights.get('yaw_alignment_dist', 5.0)
     if yaw_weight > 0 and local_relative_pos is not None and current_distance < yaw_dist and current_distance > 0.05:
-        if not yaw_on_progress or coin_progress > 1e-4:
-            cos_yaw = local_relative_pos[1] / current_distance
-            reward += yaw_weight * cos_yaw
+        cos_yaw = local_relative_pos[1] / current_distance
+        reward += yaw_weight * cos_yaw
 
     # ── Velocity direction alignment (trajectory straightness) ───────────────
     # Rewards moving toward the coin, independent of heading.

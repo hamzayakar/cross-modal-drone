@@ -1,21 +1,23 @@
 # ==========================================
 # CURRICULUM STAGES
 # ==========================================
-# Stage 0: Hover      — survive + hold Z=2.0. No coins. Flight foundation.
-# Stage 1: Scout      — 1 fixed coin 1m away. Compass following + yaw alignment.
-# Stage 2: Navigator  — 4 fixed coins in a ring. Sequential navigation.
-# Stage 3: Hunter     — 10-18 random coins at Z≈2m. Generalize XY search.
-# Stage 4: Pathfinder — 20 fixed obstacles + 4 fixed coins. Obstacle avoidance.
-# Stage 5: Pioneer    — 20 fixed obstacles + random coins. Avoidance + search.
-# Stage 6: Apex       — 20 random obstacles + random coins. Full mastery.
+# Stage 0: Hover      — stable hover at [0,0,2]. Flight foundation.
+# Stage 1: FaceIt     — pure yaw skill. Drone turns to face a random target in place.
+#                       No navigation. Eliminates lateral-slide attractor in Stage 2.
+# Stage 2: Scout      — 1 coin at random angle 2m away. First navigation.
+# Stage 3: Navigator  — 4 fixed coins in a ring. Sequential navigation.
+# Stage 4: Hunter     — 10-18 random coins at Z≈2m. Generalize XY search.
+# Stage 5: Pathfinder — 20 fixed obstacles + 4 fixed coins. Obstacle avoidance.
+# Stage 6: Pioneer    — 20 fixed obstacles + random coins. Avoidance + search.
+# Stage 7: Apex       — 20 random obstacles + random coins. Full mastery.
 #
-# Stage advancement criteria (enforced manually, not just threshold):
-#   - threshold must be exceeded in 3 CONSECUTIVE evals, not just once
+# Stage advancement criteria (enforced by ConsecutiveThresholdCallback):
+#   - threshold must be exceeded in 3 CONSECUTIVE evals
 #   - max 1 early crash per eval (episode terminating < 1000 steps with neg reward)
 #
 # Per-stage parameters:
 #   max_steps        — episode length in physics steps (240Hz)
-#   total_timesteps  — training budget (can raise if needed)
+#   total_timesteps  — training budget
 #   coin_count_range — [min, max] coins when randomize_coins=True
 #   coin_z_range     — [z_min, z_max] for random coin Z placement
 # ==========================================
@@ -28,27 +30,41 @@ stages:
     hover_only: True
     num_fixed_coins: 0
     fixed_spawn: True
-    max_steps: 3600           # 15s — short episodes force consistent precision,
-                              # not just "survive somewhere for 60s"
+    max_steps: 3600           # 15s — short episodes force consistent precision
     total_timesteps: 10000000
     reward_threshold: 6000    # (2 - ~0.08 penalty) × 3600 ≈ 6912; 6000 ≈ avg dist < 0.25m
 
   stage_1:
-    run_name: "Stage_1_Scout_v4"
+    run_name: "Stage_1_FaceIt_v1"
+    num_obstacles: 0
+    randomize_obstacles: False
+    randomize_coins: False
+    hover_only: True           # required: uses hover_target as compass anchor in _get_obs()
+    face_only: True            # overrides hover reward → face reward; randomizes face target
+    face_spawn_radius: 3.0     # virtual face target at this distance, random angle each episode
+    face_threshold: 0.95       # cos(θ) required to count as "facing"
+    face_consecutive_steps: 10 # must hold facing for this many steps for success
+    num_fixed_coins: 0
+    fixed_spawn: True          # spawn near center; drone only needs to turn, not navigate
+    max_steps: 1200            # 5s — worst case 180° turn at 2 rad/s takes ~380 steps
+                               # max_steps=1200: stall reward (465) < success reward (1090)
+    total_timesteps: 500000    # wiki: 100-300K converges; 500K is a safe ceiling
+    reward_threshold: 800.0    # requires ~16/20 successful facings; stall (465) safely below
+
+  stage_2:
+    run_name: "Stage_2_Scout_v1"
     num_obstacles: 0
     randomize_obstacles: False
     randomize_coins: False
     hover_only: False
     num_fixed_coins: 1
-    coin_spawn_radius: 2.0    # random angle each episode, fixed 2m radius — forces genuine
-                              # compass-driven navigation vs. memorized 1m drift to fixed +X
-    max_steps: 7200           # 30s — 2m coin at ~0.5m/s ≈ 4s flight, comfortable budget
+    coin_spawn_radius: 2.0    # random angle each episode, fixed 2m radius
+    max_steps: 7200           # 30s
     total_timesteps: 2000000
-    reward_threshold: 1800.0  # w_yaw=0.3: yaw-aligned collect ~1902 pts; arc collect ~1442 pts
-                              # (<1800, fails even 20/20 arcing). Requires 19-20/20 quality.
+    reward_threshold: 1800.0  # alignment² gate: aligned collect ~1700+ pts; lateral slide ~0 progress
 
-  stage_2:
-    run_name: "Stage_2_Navigator_v4"
+  stage_3:
+    run_name: "Stage_3_Navigator_v5"
     num_obstacles: 0
     randomize_obstacles: False
     randomize_coins: False
@@ -56,10 +72,10 @@ stages:
     num_fixed_coins: 4
     max_steps: 10800          # 45s — ~26s minimum path for 4-coin ring
     total_timesteps: 10000000
-    reward_threshold: 2500.0  # slightly raised to account for new reward terms
+    reward_threshold: 2500.0
 
-  stage_3:
-    run_name: "Stage_3_Hunter_v2"
+  stage_4:
+    run_name: "Stage_4_Hunter_v2"
     num_obstacles: 0
     randomize_obstacles: False
     randomize_coins: True
@@ -69,11 +85,10 @@ stages:
     total_timesteps: 10000000
     reward_threshold: 2000.0
     coin_count_range: [10, 18]
-    coin_z_range: [1.5, 2.5]  # v2: constrained to Z≈2m — XY generalization only
-                               # v1 used [1.0, 6.0] which caused Z-height failure
+    coin_z_range: [1.5, 2.5]  # constrained to Z≈2m — XY generalization only
 
-  stage_4:
-    run_name: "Stage_4_Pathfinder_v1"
+  stage_5:
+    run_name: "Stage_5_Pathfinder_v1"
     num_obstacles: 20
     randomize_obstacles: False
     randomize_coins: False
@@ -83,8 +98,8 @@ stages:
     total_timesteps: 10000000
     reward_threshold: 1500.0
 
-  stage_5:
-    run_name: "Stage_5_Pioneer_v1"
+  stage_6:
+    run_name: "Stage_6_Pioneer_v1"
     num_obstacles: 20
     randomize_obstacles: False
     randomize_coins: True
@@ -96,8 +111,8 @@ stages:
     coin_count_range: [10, 18]
     coin_z_range: [1.5, 2.5]
 
-  stage_6:
-    run_name: "Stage_6_Apex_v1"
+  stage_7:
+    run_name: "Stage_7_Apex_v1"
     num_obstacles: 20
     randomize_obstacles: True
     randomize_coins: True
@@ -111,18 +126,6 @@ stages:
 
 # ==========================================
 # HOVER REWARDS (Stage 0 only)
-#
-# Reward = max(0, 2 - 4·dist²)
-#        - tilt*(p²+r²) - ang_vel*|ω| - smoothness*mean(Δa²) - collision
-#
-# v5 changes vs v4:
-#   - 4·dist² (was dist²): zeros at 0.71m, 4× stronger gradient near origin.
-#     Old dist² had gradient -2×dist → near zero at 0.1m. Policy settled at
-#     0.3-0.5m sweet spot where effort/reward tradeoff was optimal.
-#   - smoothness_penalty (replaces velocity_penalty=0.08): penalises jerky action
-#     changes, NOT speed. velocity_penalty over 10M steps baked "near target = slow"
-#     into the value function which transferred as a deceleration prior to all
-#     subsequent navigation stages.
 # ==========================================
 hover_rewards:
   hover_target: [0.0, 0.0, 2.0]
@@ -132,32 +135,45 @@ hover_rewards:
   collision_penalty: 50.0
 
 # ==========================================
-# NAV REWARDS (Stage 1+)
+# FACE REWARDS (Stage 1 FaceIt only)
 #
-# v5 additions vs v4:
-#   approach_bonus: +150 × coin_progress when dist < 1.5m. Activates only in the
-#     final approach zone where the hover deceleration prior is strongest.
-#     Effective weight = 50 + 150 = 200 near coin, 50 at long range.
-#   yaw_alignment: +0.15 × cos(θ_error) when dist < 2.5m. cos(θ) = body_Y·compass.
-#     Without this, ~60-80% of near-target frames have coin off-camera.
-#     Required for CNN student distillation. Weight ≤ 0.25 causes minimal nav degradation.
-#   velocity_direction: +0.20 × dot(v̂, û_target). Rewards moving toward coin
-#     regardless of heading. Addresses squiggly trajectories from greedy progress
-#     reward without breaking quadrotor omnidirectionality.
-#   smoothness: reduced 0.02 → 0.03 (slight increase for cleaner teacher labels).
+# Reward = face_weight * cos(theta_error)
+#        - tilt_penalty*(p²+r²) - ang_vel*|ω| - smoothness*Δa²
+#        + success_bonus  [when stably facing for face_consecutive_steps]
+#
+# face_weight=0.5, max_steps=1200:
+#   stall reward (cos=0.93, 1200 steps) = 0.5*1200*0.93 = 558 pts
+#   success reward = 0.5*~400*0.45 + 1000 = ~1090 pts
+#   success > stall → no stalling exploit
+# ==========================================
+face_rewards:
+  face_weight: 0.5
+  tilt_penalty: 0.27
+  angular_velocity_penalty: 0.05
+  smoothness_penalty: 0.05
+  success_bonus: 1000.0
+
+# ==========================================
+# NAV REWARDS (Stage 2+)
+#
+# Key v5→v6 changes:
+#   progress_uses_alignment: true — multiplies ALL progress reward by cos²(θ).
+#     Lateral slide (θ=90°) → 0 progress reward. No zero-gradient trap (continuous).
+#     Replaces the old boolean approach_bonus_requires_yaw.
+#   progress_reward_weight: 50→150 — fights hover deceleration prior (10M Stage 0
+#     steps baked "near target = slow" into weights; 3× stronger signal overrides it).
+#   yaw_alignment_weight: 0.10 — small, always-active (NOT progress-gated).
+#     0.10×7200=720 < 1300 (coin+success): no stalling incentive.
+#     Always fires so drone has turning gradient during pure rotation (coin_progress=0).
+#     Progress-gating (v4) eliminated this gradient and caused policy collapse.
 # ==========================================
 nav_rewards:
-  progress_reward_weight: 50.0
+  progress_reward_weight: 150.0          # 50→150: overcome hover deceleration prior
+  progress_uses_alignment: true          # soft cos²(θ) gate — lateral slide earns 0
   approach_bonus_weight: 150.0
   approach_bonus_dist: 1.5
-  approach_bonus_requires_yaw: true   # unlock 3× multiplier only when cos(θ) > threshold
-  approach_bonus_yaw_threshold: 0.5   # cos > 0.5 ≈ within 60° of coin (matches 120° FOV)
-  yaw_alignment_weight: 0.3           # safe with yaw_on_progress_only=True (no stalling risk)
-  yaw_alignment_dist: 5.0             # extended from 2.5m: teacher faces coin throughout
-                                      # full approach, not just last 2.5m — required for CNN
-                                      # student to have coin in camera for entire approach
-  yaw_on_progress_only: true          # CRITICAL: yaw reward only fires when coin_progress>0
-                                      # eliminates stall-and-face exploit (w×max_steps > 1300)
+  yaw_alignment_weight: 0.10             # small, always-active (no stalling, turning gradient)
+  yaw_alignment_dist: 5.0               # covers full approach at any stage distance
   velocity_direction_weight: 0.20
   smoothness_penalty_multiplier: 0.03
   lidar_penalty_multiplier: 0.5
