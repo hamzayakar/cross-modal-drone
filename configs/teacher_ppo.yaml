@@ -48,7 +48,7 @@ stages:
     fixed_spawn: True          # spawn near center; drone only needs to turn, not navigate
     max_steps: 1200            # 5s — worst case 180° turn at 2 rad/s takes ~380 steps
                                # max_steps=1200: stall reward (465) < success reward (1090)
-    total_timesteps: 500000    # wiki: 100-300K converges; 500K is a safe ceiling
+    total_timesteps: 1000000   # wiki: 100-300K converges; 1M = 7 evals, callback stops early
     reward_threshold: 800.0    # requires ~16/20 successful facings; stall (465) safely below
 
   stage_2:
