@@ -16,10 +16,10 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from viewers.viewer_utils import load_stage, make_env, draw_scene, redraw_scene, draw_arrow, update_hud, draw_ghost_coin
+from viewers.viewer_utils import load_stage, make_env, draw_scene, redraw_scene, draw_arrow, draw_trail, update_hud, draw_ghost_coin
 
 # ── Config ────────────────────────────────────────────────────────────────────
-STAGE_TO_WATCH = 1          # 0=Hover 1=FaceIt 2=Scout 3=Navigator 4=Hunter ...
+STAGE_TO_WATCH = 0          # 0=Hover 1=Scout 2=Navigator 3=Hunter 4=Pathfinder ...
 RENDER_STRIDE  = 10
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -56,6 +56,7 @@ draw_scene(env_raw)
 sid = hli = hri = hud_id = stage_id = None
 ep_r = ep_s = 0; ep_t = time.time(); step_r = 0.
 _tracked = [g['pos'][:] for g in env_raw.gold_data]
+_trail = None
 
 while True:
     done = False
@@ -63,15 +64,17 @@ while True:
         act, _ = model.predict(obs, deterministic=True)
         obs, rews, dones, _ = env.step(act)
         step_r = rews[0]; ep_r += step_r; ep_s += 1
+        if dones[0]: done = True; break
         cur = [g['pos'][:] for g in env_raw.gold_data]
         for pos in list(_tracked):
             if pos not in cur:
                 draw_ghost_coin(pos); _tracked.remove(pos)
-        if dones[0]: done = True; break
 
     if done:
         print(f"Episode | steps={ep_s} sim={ep_s/240:.1f}s R={ep_r:.1f} [{model_name}]")
         ep_r = ep_s = 0; step_r = 0.; sid = hli = hri = hud_id = stage_id = None
+        _trail = None
+        p.removeAllUserDebugItems()
         time.sleep(1.0)
         redraw_scene(env_raw); ep_t = time.time()
         _tracked = [g['pos'][:] for g in env_raw.gold_data]
@@ -89,6 +92,7 @@ while True:
     rot = np.array(p.getMatrixFromQuaternion(ori)).reshape(3, 3)
     nd  = rot @ np.array([0, 1, 0])
     sid, hli, hri = draw_arrow(list(dp), nd, sid, hli, hri)
+    draw_trail(_trail, list(dp)); _trail = list(dp)
     if ep_s % max(12, RENDER_STRIDE) == 0:
         hud_id, stage_id = update_hud(env_raw, dp, rot, STAGE_TO_WATCH, RUN_NAME,
                                        f'LIVE({model_name})', step_r, ep_r, hud_id, stage_id)

@@ -2,14 +2,13 @@
 # CURRICULUM STAGES
 # ==========================================
 # Stage 0: Hover      — stable hover at [0,0,2]. Flight foundation.
-# Stage 1: FaceIt     — pure yaw skill. Drone turns to face a random target in place.
-#                       No navigation. Eliminates lateral-slide attractor in Stage 2.
-# Stage 2: Scout      — 1 coin at random angle 2m away. First navigation.
-# Stage 3: Navigator  — 4 fixed coins in a ring. Sequential navigation.
-# Stage 4: Hunter     — 10-18 random coins at Z≈2m. Generalize XY search.
-# Stage 5: Pathfinder — 20 fixed obstacles + 4 fixed coins. Obstacle avoidance.
-# Stage 6: Pioneer    — 20 fixed obstacles + random coins. Avoidance + search.
-# Stage 7: Apex       — 20 random obstacles + random coins. Full mastery.
+# Stage 1: Scout      — 1 coin at random angle 2m away. First navigation.
+#                       cos²(θ) alignment gate forces face-first approach.
+# Stage 2: Navigator  — 4 fixed coins in a ring. Sequential navigation.
+# Stage 3: Hunter     — 10-18 random coins at Z≈2m. Generalize XY search.
+# Stage 4: Pathfinder — 20 fixed obstacles + 4 fixed coins. Obstacle avoidance.
+# Stage 5: Pioneer    — 20 fixed obstacles + random coins. Avoidance + search.
+# Stage 6: Apex       — 20 random obstacles + random coins. Full mastery.
 #
 # Stage advancement criteria (enforced by ConsecutiveThresholdCallback):
 #   - threshold must be exceeded in 3 CONSECUTIVE evals
@@ -23,7 +22,7 @@
 # ==========================================
 stages:
   stage_0:
-    run_name: "Stage_0_Hover_v5"
+    run_name: "Stage_0_Hover_v7"
     num_obstacles: 0
     randomize_obstacles: False
     randomize_coins: False
@@ -32,27 +31,10 @@ stages:
     fixed_spawn: True
     max_steps: 3600           # 15s — short episodes force consistent precision
     total_timesteps: 10000000
-    reward_threshold: 6000    # (2 - ~0.08 penalty) × 3600 ≈ 6912; 6000 ≈ avg dist < 0.25m
+    reward_threshold: 7500    # hover max alone = 7200 < 7500 → threshold unreachable without yaw alignment
 
   stage_1:
-    run_name: "Stage_1_FaceIt_v1"
-    num_obstacles: 0
-    randomize_obstacles: False
-    randomize_coins: False
-    hover_only: True           # required: uses hover_target as compass anchor in _get_obs()
-    face_only: True            # overrides hover reward → face reward; randomizes face target
-    face_spawn_radius: 3.0     # virtual face target at this distance, random angle each episode
-    face_threshold: 0.95       # cos(θ) required to count as "facing"
-    face_consecutive_steps: 10 # must hold facing for this many steps for success
-    num_fixed_coins: 0
-    fixed_spawn: True          # spawn near center; drone only needs to turn, not navigate
-    max_steps: 1200            # 5s — worst case 180° turn at 2 rad/s takes ~380 steps
-                               # max_steps=1200: stall reward (465) < success reward (1090)
-    total_timesteps: 1000000   # wiki: 100-300K converges; 1M = 7 evals, callback stops early
-    reward_threshold: 800.0    # requires ~16/20 successful facings; stall (465) safely below
-
-  stage_2:
-    run_name: "Stage_2_Scout_v1"
+    run_name: "Stage_1_Scout_v3"
     num_obstacles: 0
     randomize_obstacles: False
     randomize_coins: False
@@ -61,10 +43,10 @@ stages:
     coin_spawn_radius: 2.0    # random angle each episode, fixed 2m radius
     max_steps: 7200           # 30s
     total_timesteps: 2000000
-    reward_threshold: 1800.0  # alignment² gate: aligned collect ~1700+ pts; lateral slide ~0 progress
+    reward_threshold: 1800.0  # cos²(θ) gate: aligned collect ~1700+ pts; lateral slide ~0 progress
 
-  stage_3:
-    run_name: "Stage_3_Navigator_v5"
+  stage_2:
+    run_name: "Stage_2_Navigator_v5"
     num_obstacles: 0
     randomize_obstacles: False
     randomize_coins: False
@@ -74,8 +56,8 @@ stages:
     total_timesteps: 10000000
     reward_threshold: 2500.0
 
-  stage_4:
-    run_name: "Stage_4_Hunter_v2"
+  stage_3:
+    run_name: "Stage_3_Hunter_v2"
     num_obstacles: 0
     randomize_obstacles: False
     randomize_coins: True
@@ -87,8 +69,8 @@ stages:
     coin_count_range: [10, 18]
     coin_z_range: [1.5, 2.5]  # constrained to Z≈2m — XY generalization only
 
-  stage_5:
-    run_name: "Stage_5_Pathfinder_v1"
+  stage_4:
+    run_name: "Stage_4_Pathfinder_v1"
     num_obstacles: 20
     randomize_obstacles: False
     randomize_coins: False
@@ -98,8 +80,8 @@ stages:
     total_timesteps: 10000000
     reward_threshold: 1500.0
 
-  stage_6:
-    run_name: "Stage_6_Pioneer_v1"
+  stage_5:
+    run_name: "Stage_5_Pioneer_v1"
     num_obstacles: 20
     randomize_obstacles: False
     randomize_coins: True
@@ -111,8 +93,8 @@ stages:
     coin_count_range: [10, 18]
     coin_z_range: [1.5, 2.5]
 
-  stage_7:
-    run_name: "Stage_7_Apex_v1"
+  stage_6:
+    run_name: "Stage_6_Apex_v1"
     num_obstacles: 20
     randomize_obstacles: True
     randomize_coins: True
@@ -133,43 +115,22 @@ hover_rewards:
   angular_velocity_penalty: 0.05
   smoothness_penalty: 0.05
   collision_penalty: 50.0
+  hover_yaw_weight: 0.5       # face a random direction while hovering — activates dormant action[2]
 
 # ==========================================
-# FACE REWARDS (Stage 1 FaceIt only)
+# NAV REWARDS (Stage 1+)
 #
-# Reward = face_weight * cos(theta_error)
-#        - tilt_penalty*(p²+r²) - ang_vel*|ω| - smoothness*Δa²
-#        + success_bonus  [when stably facing for face_consecutive_steps]
-#
-# face_weight=0.5, max_steps=1200:
-#   stall reward (cos=0.93, 1200 steps) = 0.5*1200*0.93 = 558 pts
-#   success reward = 0.5*~400*0.45 + 1000 = ~1090 pts
-#   success > stall → no stalling exploit
-# ==========================================
-face_rewards:
-  face_weight: 0.5
-  tilt_penalty: 0.27
-  angular_velocity_penalty: 0.05
-  smoothness_penalty: 0.05
-  success_bonus: 1000.0
-
-# ==========================================
-# NAV REWARDS (Stage 2+)
-#
-# Key v5→v6 changes:
-#   progress_uses_alignment: true — multiplies ALL progress reward by cos²(θ).
-#     Lateral slide (θ=90°) → 0 progress reward. No zero-gradient trap (continuous).
-#     Replaces the old boolean approach_bonus_requires_yaw.
-#   progress_reward_weight: 50→150 — fights hover deceleration prior (10M Stage 0
-#     steps baked "near target = slow" into weights; 3× stronger signal overrides it).
-#   yaw_alignment_weight: 0.10 — small, always-active (NOT progress-gated).
-#     0.10×7200=720 < 1300 (coin+success): no stalling incentive.
-#     Always fires so drone has turning gradient during pure rotation (coin_progress=0).
-#     Progress-gating (v4) eliminated this gradient and caused policy collapse.
+# progress_uses_alignment: true — multiplies ALL progress reward by cos²(θ).
+#   Lateral slide (θ=90°) → 0 progress reward. No zero-gradient trap (continuous).
+#   This forces face-first approach without a separate yaw-alignment stage.
+# progress_reward_weight: 150 — overcomes hover deceleration prior (10M Stage 0
+#   steps baked "near target = slow" into weights; 3× stronger signal overrides it).
+# yaw_alignment_weight: 0.10 — small, always-active (NOT progress-gated).
+#   Always fires so drone has turning gradient during pure rotation (coin_progress=0).
 # ==========================================
 nav_rewards:
   progress_reward_weight: 150.0          # 50→150: overcome hover deceleration prior
-  progress_uses_alignment: true          # soft cos²(θ) gate — lateral slide earns 0
+  progress_uses_alignment: true          # cos²(θ) gate — lateral slide earns 0
   approach_bonus_weight: 150.0
   approach_bonus_dist: 1.5
   yaw_alignment_weight: 0.10             # small, always-active (no stalling, turning gradient)
@@ -180,3 +141,7 @@ nav_rewards:
   coin_collection_reward: 300.0
   success_bonus: 1000.0
   collision_penalty: 300.0
+  # FOV masking: coin compass zeroed when outside ±fov_half_degrees.
+  # search_rotation_reward: only non-zero gradient when compass=zeros, forces action[2] discovery.
+  fov_half_degrees: 60                   # ±60° = 120° total (typical wide-angle drone camera)
+  search_rotation_reward: 0.03          # rewards |yaw_rate| when coin outside FOV

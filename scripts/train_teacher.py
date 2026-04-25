@@ -134,13 +134,7 @@ if __name__ == "__main__":
     COIN_COUNT_RANGE      = tuple(stage_config.get('coin_count_range', [10, 18]))
     COIN_Z_RANGE          = tuple(stage_config.get('coin_z_range', [1.5, 2.5]))
     COIN_SPAWN_RADIUS     = stage_config.get('coin_spawn_radius', None)
-    FACE_ONLY             = stage_config.get('face_only', False)
-    FACE_SPAWN_RADIUS     = stage_config.get('face_spawn_radius', 3.0)
-    FACE_THRESHOLD        = stage_config.get('face_threshold', 0.95)
-    FACE_CONSECUTIVE      = stage_config.get('face_consecutive_steps', 10)
-    if FACE_ONLY:
-        reward_weights = config['face_rewards']
-    elif HOVER_ONLY:
+    if HOVER_ONLY:
         reward_weights = config['hover_rewards']
     else:
         reward_weights = config['nav_rewards']
@@ -188,10 +182,6 @@ if __name__ == "__main__":
                 coin_count_range=COIN_COUNT_RANGE,
                 coin_z_range=COIN_Z_RANGE,
                 coin_spawn_radius=COIN_SPAWN_RADIUS,
-                face_only=FACE_ONLY,
-                face_spawn_radius=FACE_SPAWN_RADIUS,
-                face_threshold=FACE_THRESHOLD,
-                face_consecutive_steps=FACE_CONSECUTIVE,
             )
             monitor_path = os.path.join(stage_model_dir, "monitor.csv") if rank == 0 else None
             return Monitor(env, monitor_path)
@@ -212,10 +202,6 @@ if __name__ == "__main__":
         coin_count_range=COIN_COUNT_RANGE,
         coin_z_range=COIN_Z_RANGE,
         coin_spawn_radius=COIN_SPAWN_RADIUS,
-        face_only=FACE_ONLY,
-        face_spawn_radius=FACE_SPAWN_RADIUS,
-        face_threshold=FACE_THRESHOLD,
-        face_consecutive_steps=FACE_CONSECUTIVE,
     )
     eval_env_mon = Monitor(eval_env_raw)
     eval_env_vec = DummyVecEnv([lambda e=eval_env_mon: e])

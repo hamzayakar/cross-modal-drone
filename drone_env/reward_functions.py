@@ -1,39 +1,6 @@
 import numpy as np
 
 
-def compute_face_reward(cos_theta, body_pitch, body_roll, local_ang_vel,
-                        action_diff, is_success, reward_weights):
-    """
-    Stage 1 (FaceIt) reward — pure yaw alignment skill.
-
-    Teaches the drone to rotate in place to face a virtual target before
-    any navigation is introduced. Eliminates the lateral-slide attractor
-    that occurs when yaw alignment is learned simultaneously with approach.
-
-    Reward = face_weight * cos(theta_error)
-           - tilt_penalty*(pitch²+roll²)
-           - angular_velocity_penalty*|ω|
-           - smoothness_penalty*mean(Δa²)
-           + success_bonus  [when stably facing for face_consecutive_steps]
-
-    Design: face_weight=0.5, max_steps=1200 ensures:
-      stall_reward (cos=0.93, 1200 steps) = 0.5*1200*0.93 = 558 pts
-      success_reward = 0.5*~400*0.45 + 1000 = ~1090 pts
-      success > stall → no stalling exploit
-    """
-    face_weight = reward_weights.get('face_weight', 0.5)
-    reward = face_weight * float(cos_theta)
-
-    tilt = body_pitch ** 2 + body_roll ** 2
-    reward -= reward_weights.get('tilt_penalty', 0.27) * tilt
-    reward -= reward_weights.get('angular_velocity_penalty', 0.05) * np.linalg.norm(local_ang_vel)
-    reward -= reward_weights.get('smoothness_penalty', 0.05) * action_diff
-
-    if is_success:
-        reward += reward_weights.get('success_bonus', 1000.0)
-
-    return reward
-
 
 def compute_hover_reward(drone_pos, target_pos, drone_vel, body_pitch, body_roll,
                          local_ang_vel, action_diff, is_collision, reward_weights):
@@ -113,8 +80,7 @@ def compute_dense_reward(drone_pos, drone_vel, action, current_distance, is_coll
     # Multiplies both progress reward and approach bonus by max(0, cos(θ))².
     # Continuous soft gate: lateral slide (θ=90°)→0 reward; 45° off→50%; facing→100%.
     # No zero-gradient boundary: the drone always has signal to reduce yaw error.
-    # With Stage 1 FaceIt providing a turning prior, this enforces face-then-fly
-    # without the zero-gradient trap of boolean conditions.
+    # Enforces face-then-fly without the zero-gradient trap of boolean conditions.
     alignment_factor = 1.0
     if reward_weights.get('progress_uses_alignment', False) and \
             local_relative_pos is not None and current_distance > 0.05:
