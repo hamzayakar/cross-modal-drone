@@ -22,16 +22,17 @@
 # ==========================================
 stages:
   stage_0:
-    run_name: "Stage_0_Hover_v7"
+    run_name: "Stage_0_Hover_v8"
     num_obstacles: 0
     randomize_obstacles: False
     randomize_coins: False
     hover_only: True
     num_fixed_coins: 0
     fixed_spawn: True
-    max_steps: 3600           # 15s — short episodes force consistent precision
-    total_timesteps: 10000000
-    reward_threshold: 7500    # hover max alone = 7200 < 7500 → threshold unreachable without yaw alignment
+    max_steps: 3600
+    total_timesteps: 1000000  # hover already solved in seed — only yaw needs learning
+    reward_threshold: 8500    # v5 hover ~6200 + yaw_w=1.0*cos<50° → forces genuine alignment
+    seed_weights_from: "Stage_0_Hover_v5"  # load weights+vecnorm from v5, reset compass dims
 
   stage_1:
     run_name: "Stage_1_Scout_v3"
@@ -115,7 +116,7 @@ hover_rewards:
   angular_velocity_penalty: 0.05
   smoothness_penalty: 0.05
   collision_penalty: 50.0
-  hover_yaw_weight: 0.5       # face a random direction while hovering — activates dormant action[2]
+  hover_yaw_weight: 1.0       # face a random direction while hovering — activates dormant action[2]
 
 # ==========================================
 # NAV REWARDS (Stage 1+)
