@@ -19,17 +19,22 @@ PyBullet-based quadrotor simulation for curriculum reinforcement learning. A PPO
 ## Project Structure
 
 ```
-configs/teacher_ppo.yaml      — curriculum stage configs + reward weights
-drone_env/drone_sim.py        — Gymnasium env (PyBullet 240Hz, PD controller, 50-D obs)
-drone_env/reward_functions.py — hover + navigation reward functions
-scripts/train_teacher.py      — PPO training entry point
-scripts/distill_policy.py     — teacher → student distillation (future)
-models/stage_N/<run_name>/    — working weights (.zip), VecNormalize stats (.pkl), monitor.csv
-models/best/<run_name>/       — auto-updated canonical best checkpoint per stage
-logs/teacher_ppo/stage_N/     — TensorBoard events + evaluations.npz per stage
-logs/legacy/                  — pre-curriculum and deprecated runs (historical only)
-notebooks/                    — PyBullet GUI watchers (live training + eval)
-docs/reward_evo.md            — complete training history: every bug, fix, and lesson learned
+configs/teacher_ppo.yaml        — curriculum stage configs + reward weights
+drone_env/drone_sim.py          — Gymnasium env (PyBullet 240Hz, PD controller, 50-D obs)
+drone_env/reward_functions.py   — hover + navigation reward functions
+scripts/train_teacher.py        — PPO training entry point
+scripts/distill_policy.py       — teacher → student distillation (future)
+student/                        — CNN student architecture + loss functions (future)
+viewers/watch_live.py           — watch raw training state (reloads every episode)
+viewers/watch_best.py           — watch best_model during training (hot-reload on EvalCallback)
+viewers/watch_any.py            — load any completed model (--stage N --model best|final)
+models/stage_N/<run_name>/      — active training artifacts: best/final/latest model + monitor.csv
+models/best/<run_name>/         — canonical best per run (train script loads from here)
+models/archive/<run_name>/      — completed/failed runs; thesis evidence
+logs/teacher_ppo/stage_N/       — TensorBoard events (tensorboard --logdir logs/teacher_ppo)
+docs/reward_evo.md              — index of training history
+docs/history/                   — full history split: pre_curriculum / curriculum_v1 / curriculum_v5
+docs/design_notes.md            — future stage design decisions + open questions
 ```
 
 ## Architecture
@@ -94,31 +99,32 @@ net_arch     = [256, 256]              # pi and vf (needed for cross-correlation
 ## Training
 
 ```bash
-python scripts/train_teacher.py --stage 3   # Stage 3 (Hunter) — current
-python scripts/train_teacher.py --stage 4   # Stage 4 (Pathfinder)
+python scripts/train_teacher.py --stage 0   # Stage 0 (Hover v7) — current
+python scripts/train_teacher.py --stage 1   # Stage 1 (Scout)
 ```
 
 Auto-resume logic (in priority order):
-1. `models/<run_name>/best_model.zip` — resume current stage if a best model exists
-2. `models/best/<prev_run>/best_model.zip` — load previous stage weights for fresh start
+1. `models/stage_N/<run_name>/best_model.zip` — resume current stage if checkpoint exists
+2. `models/best/<prev_stage_run>/best_model.zip` — load previous stage weights for fresh start
 3. Scratch — if nothing found
 
 ```bash
-tensorboard --logdir logs/teacher_ppo/stage_3   # current stage only
+tensorboard --logdir logs/teacher_ppo/stage_0   # current stage only
 tensorboard --logdir logs/teacher_ppo            # all stages
 ```
 
-EvalCallback: every 10,000 policy steps, 20 deterministic episodes. `StopTrainingOnRewardThreshold` fires when the stage's `reward_threshold` is crossed.
+EvalCallback: every 10,000 policy steps, 20 deterministic episodes. `ConsecutiveThresholdCallback` stops training when `reward_threshold` is exceeded 3 evals in a row.
 
-## Notebooks
+## Viewers
 
-| Notebook | Purpose |
-|---|---|
-| `03_watch_agent_frozen.ipynb` | Load a model once, watch indefinitely. Set `STAGE_TO_WATCH` manually. |
-| `04_watch_agent_best.ipynb` | Hot-reload `best_model.zip` after each episode — tracks improving policy during training. |
-| `05_watch_agent_live.ipynb` | Watch the live model file as it updates during active training. |
-
-**WSL2 GUI speed note:** Each `addUserDebugLine()` call is an IPC round-trip (~10–15ms). Effective rate ≈ 20–25 Hz vs 240 Hz sim = ~10x slower than real-time. Set `RENDER_STRIDE = 10` for ~real-time display, `1` for slow-motion inspection.
+```bash
+python viewers/watch_live.py --stage 0            # live training state (reloads every episode)
+python viewers/watch_best.py --stage 0            # best checkpoint (hot-reloads on eval save)
+python viewers/watch_any.py  --stage 0            # frozen best_model
+python viewers/watch_any.py  --stage 0 --model final   # frozen final_model
+python viewers/watch_any.py  --stage 1 --stride 1      # slow-motion (1 step per frame)
+```
+**WSL2 GUI speed note:** Each `addUserDebugLine()` call is an IPC round-trip (~10–15ms). Effective rate ≈ 20–25 Hz vs 240 Hz sim = ~10x slower than real-time. `--stride 10` for ~real-time, `--stride 1` for slow-motion.
 
 ## Key Design Decisions
 
