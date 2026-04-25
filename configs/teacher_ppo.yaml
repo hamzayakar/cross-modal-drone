@@ -34,7 +34,7 @@ stages:
     reward_threshold: 6000
 
   stage_1:
-    run_name: "Stage_1_Scout_v3"
+    run_name: "Stage_1_Scout_v4"
     num_obstacles: 0
     randomize_obstacles: False
     randomize_coins: False
