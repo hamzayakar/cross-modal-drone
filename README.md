@@ -4,14 +4,14 @@ PyBullet-based quadrotor simulation for curriculum reinforcement learning. A PPO
 
 ## Current Status
 
-**Stage 1 (Scout v3)** — retraining with yaw-conditional approach bonus. Full v5 curriculum restart after diagnosing deceleration prior and arc-trajectory failures in v4.
+**Stage 0 (Hover v7)** — retraining with yaw activation (hover_yaw_weight=0.5). Stage 1 Scout attempts (v1–v3) revealed action[2] dormancy from 4.48M hover-only steps; v7 trains yaw jointly from scratch so action[2] is active before Stage 1.
 
 | Stage | Name | Status | Result |
 |---|---|---|---|
-| 0 | Hover | ✓ Solved | v5, ~4.48M steps, mean ~6200, 20/20 × 3 consec evals |
-| 1 | Scout | ◉ Retraining | v3: yaw-conditional approach bonus, threshold 1900 |
-| 2 | Navigator | — | 4 fixed coins in a ring, v5 rewards |
-| 3 | Hunter | — | 10–18 random coins, Z∈[1.5,2.5]m (XY generalization only) |
+| 0 | Hover | ◉ Training | v7: yaw activation (hover_yaw_weight=0.5), threshold 7500 |
+| 1 | Scout | — | 1 coin at random angle 2m away; cos²(θ) gate forces face-first |
+| 2 | Navigator | — | 4 fixed coins in a ring |
+| 3 | Hunter | — | 10–18 random coins, Z∈[1.5,2.5]m |
 | 4 | Pathfinder | — | 20 fixed obstacles + 4 fixed coins |
 | 5 | Pioneer | — | 20 fixed obstacles + random coins |
 | 6 | Apex | — | 20 random obstacles + random coins |
@@ -129,7 +129,7 @@ EvalCallback: every 10,000 policy steps, 20 deterministic episodes. `StopTrainin
 | Body-frame observations | World-frame compass changes meaning as drone rotates — breaks ego-centric CNN distillation |
 | Gimbal-stabilized LiDAR | Full rotation matrix on 2D LiDAR causes projection shrinkage on pitch: effective range 5m→3.5m at 45° |
 | Progress reward | `alive_bonus − dist_penalty×dist` is negative at dist>1m → Suicide Policy at far coins |
-| Virtual hover target | Compass always active in Stage 0 (points to [0,0,2]) — policy learns one generalizable skill: "minimize compass vector" |
+| Hover yaw activation | Stage 0 v7 trains hover + random yaw target jointly so action[2] is active before Stage 1; yaw_weight=0.5 makes threshold 7500 unreachable by hover alone |
 | `models/best/` canonical | AutoArchiveBestCallback keeps it current; safe cross-stage weight loading without brittle path coupling |
 
 ## Distillation (future)
@@ -139,4 +139,4 @@ Once the Stage 6 (Apex) teacher is trained:
 - Student CNN (RGB/depth camera frames → 4-D action) via behavioral cloning / DAgger
 - Teacher's ego-centric obs design ensures action labels are camera-frame compatible
 - Teacher's smoothness penalty ensures low-jerk trajectories → clean CNN training labels
-- Key open question: teacher doesn't always face the coin during approach (flies sideways). Options: yaw-alignment reward, wider camera FOV, or DAgger to handle distribution shift
+- Teacher trained with cos²(θ) alignment gate in Stage 1+; approaches within ~40° yaw error so coin stays in CNN camera FOV during approach trajectories

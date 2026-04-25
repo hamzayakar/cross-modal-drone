@@ -1861,3 +1861,71 @@ All v3 changes retained, with:
 | Stall 7200s, no collect | **No** (no progress) | **0 pts** |
 
 Threshold 1800 definitively rejects both arc behavior and stalling.
+
+---
+
+## FaceIt Stage — Design, 3 Attempts, and Abandonment
+
+**Date:** 2026-04-24
+
+### Motivation
+
+Stage 1 Scout v1–v3 all showed the drone approaching coins laterally (action[2]=yaw_rate never used). Root cause diagnosis: after 4.48M hover-only steps, action[2] weights had 54M gradient updates saying "yaw=0 is always optimal." No reward engineering in Stage 1 could overcome this prior — the drone uses pitch/roll translation to satisfy any yaw-alignment metric geometrically.
+
+Proposed solution: a dedicated FaceIt stage between Hover and Scout — drone already at target, must rotate in place to face a virtual target. Approach gradient removed so only yaw rotation can reduce yaw error.
+
+### FaceIt v1/v2/v3 — Repeated Failure
+
+All three runs failed with the same signature: policy oscillates, drone never reliably rotates to face target. Post-mortem identified four root causes (wiki literature search confirmed none have been addressed in published drone RL work):
+
+1. **VecNormalize stats mismatch** — hover VecNorm calibrated to position-variance distributions; FaceIt yaw-cycling distributions are completely different → normalized obs garbage for yaw learning.
+2. **Hover prior too strong** — loaded from 4.48M-step checkpoint; the approach gradient reactivates via position penalty terms despite reward engineering.
+3. **Termination too aggressive at 1m** — any yaw rotation causes gyroscopic drift; episode terminates before alignment reward is ever seen.
+4. **FaceIt as a separate stage is unvalidated in literature** — no published drone RL paper trains yaw-alignment as a discrete pre-navigation stage. All perception-aware approaches (Penicka et al. ICRA 2023) add yaw as a continuous reward during joint navigation training.
+
+### Decision: Abandon FaceIt
+
+FaceIt removed from curriculum. Stage numbering restored: Stage 0 Hover → Stage 1 Scout → Stage 2 Navigator → ... → Stage 6 Apex.
+
+---
+
+## Stage 0 v6 — Yaw Activation Attempt (weak weight)
+
+**Date:** 2026-04-24
+
+### Design
+
+Instead of a separate FaceIt stage, add a yaw facing reward directly to Stage 0 hover training. Per episode: randomize `hover_yaw_target ∈ [−π, π]`. Reward += `hover_yaw_weight × cos(yaw − hover_yaw_target)`. Compass observation (when yaw weight active): changed from position offset to hover target to a unit direction vector toward `hover_yaw_target` in body frame — same compass structure as nav stage pointing to coin, so the "compass left → turn left" mapping transfers directly.
+
+Parameters: `hover_yaw_weight = 0.15`, `reward_threshold = 6500`, run from scratch.
+
+### Result
+
+Hit threshold (6603, 6654, 6574) but drone did not visibly face the blue arrow target. **Root cause: threshold 6500 was reachable by hover alone.** Perfect hover yields 2.0/step × 3600 = 7200/episode; v5-quality hover yields ~6200. With yaw_weight=0.15, max yaw contribution is 0.15 × 3600 = 540/episode. Drone can hit 6500 at v5-level hover (6200) with only 300 pts of random yaw luck — no genuine alignment required.
+
+---
+
+## Stage 0 v7 — Yaw Activation (correct weight + threshold)
+
+**Date:** 2026-04-25
+
+### Design
+
+Same structure as v6 but with corrected weight and threshold:
+- `hover_yaw_weight: 0.5` — 3.3× increase; yaw max = 0.5 × 3600 = 1800/episode
+- `reward_threshold: 7500` — hover max alone = 7200 < 7500 → **hover alone cannot pass**
+- Trained from scratch (run_name: Stage_0_Hover_v7)
+
+### Threshold analysis
+
+| Behavior | Hover contrib | Yaw contrib | Total | Passes 7500? |
+|---|---|---|---|---|
+| Perfect hover, random yaw | 7200 | 0 | 7200 | **No** |
+| Good hover (1.8/step), 43° alignment | 6480 | 1020 | 7500 | Borderline |
+| Good hover, 25° alignment | 6480 | 1632 | 8112 | Yes |
+
+Threshold forces genuine yaw alignment. Drone must consistently face within ~40–55° of target to pass 3 consecutive evals.
+
+### Expected outcome
+
+Drone learns hover + yaw simultaneously from scratch. action[2] gets real gradient from episode 0. After training, action[2] should be active and responsive to yaw error — enabling Stage 1 cos²(θ) gate to work.
