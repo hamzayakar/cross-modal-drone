@@ -466,8 +466,7 @@ class RoomDroneEnv(gym.Env):
         drone_pos, ori = p.getBasePositionAndOrientation(self.drone_id)
         drone_vel, _   = p.getBaseVelocity(self.drone_id)
 
-        # Body-frame velocity and compass — used by nav reward (yaw alignment,
-        # velocity direction). Compute once here rather than inside reward function.
+        # Body-frame velocity — used by velocity direction reward.
         rot_post = np.array(p.getMatrixFromQuaternion(ori)).reshape(3, 3)
         local_vel_post = rot_post.T.dot(drone_vel)
 
@@ -560,18 +559,13 @@ class RoomDroneEnv(gym.Env):
             # readings to the reward judge. Ground truth LiDAR is recomputed here.
             clean_lidar = self._compute_lidar(drone_pos, ori)
 
-            # Body-frame compass for yaw alignment and velocity direction rewards.
-            # Apply FOV mask: if coin outside forward cone, local_rel_post = zeros so
-            # all alignment-gated reward terms naturally return 0 (no special casing needed).
+            # Body-frame compass for velocity direction reward.
             if self.gold_data:
                 distances_r = [math.sqrt(sum((d - v)**2 for d, v in zip(drone_pos, g["pos"])))
                                 for g in self.gold_data]
                 nearest_pos = self.gold_data[int(np.argmin(distances_r))]["pos"]
                 global_rel  = np.array([g - d for g, d in zip(nearest_pos, drone_pos)])
                 local_rel_post = rot_post.T.dot(global_rel)
-                # Reward uses UNMASKED compass so yaw_alignment_reward fires even
-                # when coin is outside observation FOV. This provides the turning gradient
-                # that drives action[2] discovery — observation stays masked, reward does not.
             else:
                 local_rel_post = np.zeros(3)
 
@@ -583,13 +577,6 @@ class RoomDroneEnv(gym.Env):
                 local_relative_pos=local_rel_post,
                 reward_weights=self.reward_weights
             )
-
-            # FOV search reward: small bonus for yaw rotation when coin is outside FOV.
-            # This is the only non-zero gradient available when compass = zeros, forcing
-            # discovery of action[2] (yaw rate) which was never used in Stage 0 hover.
-            search_r = self.reward_weights.get('search_rotation_reward', 0.0)
-            if search_r > 0.0 and not self._coin_in_fov and not coin_collected:
-                reward += search_r * abs(local_ang_vel[2])
 
         return obs, reward, terminated, truncated, info
 

@@ -4,12 +4,12 @@ PyBullet-based quadrotor simulation for curriculum reinforcement learning. A PPO
 
 ## Current Status
 
-**Stage 0 (Hover v7)** — retraining with yaw activation (hover_yaw_weight=0.5). Stage 1 Scout attempts (v1–v3) revealed action[2] dormancy from 4.48M hover-only steps; v7 trains yaw jointly from scratch so action[2] is active before Stage 1.
+**Stage 1 (Scout v4)** — teacher approaches coins unconstrained. Student distillation will use 360° panoramic camera so face-first behavior is not required.
 
 | Stage | Name | Status | Result |
 |---|---|---|---|
-| 0 | Hover | ◉ Training | v7: yaw activation (hover_yaw_weight=0.5), threshold 7500 |
-| 1 | Scout | — | 1 coin at random angle 2m away; cos²(θ) gate forces face-first |
+| 0 | Hover | ✓ Solved | v5, 4.48M steps, mean 6200, 20/20 × 3 evals |
+| 1 | Scout | ◉ Training | v4: 1 coin, random angle, 2m, no yaw constraints |
 | 2 | Navigator | — | 4 fixed coins in a ring |
 | 3 | Hunter | — | 10–18 random coins, Z∈[1.5,2.5]m |
 | 4 | Pathfinder | — | 20 fixed obstacles + 4 fixed coins |
@@ -71,9 +71,8 @@ Non-negative by design: staying alive is always ≥ crashing. The dist² gradien
 
 **Stage 1+ (Navigation):**
 ```
-R = progress_weight × (prev_dist − curr_dist)          ← metres closed toward nearest coin × 50
-  + approach_bonus × (prev_dist − curr_dist)            [+150×Δdist when dist<1.5m AND cos(θ)>0.5]
-  + yaw_alignment_weight × cos(θ_error)                 [+0.5×cos(θ) when dist<2.5m]
+R = progress_weight × (prev_dist − curr_dist)          ← metres closed toward nearest coin × 150
+  + approach_bonus × (prev_dist − curr_dist)            [+150×Δdist when dist<1.5m]
   + velocity_direction_weight × dot(v̂, û_target)       [+0.20 when moving toward coin]
   − smoothness_penalty × mean(Δaction²)
   − lidar_penalty      × max(0, 0.1 − min_lidar)
@@ -81,7 +80,7 @@ R = progress_weight × (prev_dist − curr_dist)          ← metres closed towa
   + success_bonus                                        [+1000 if all coins collected]
   − collision_penalty                                    [−300 if crash]
 ```
-**Approach bonus is yaw-conditional**: the 3× multiplier at dist<1.5m only fires when the drone faces the coin within 60° (`cos(θ) > 0.5`). Arc trajectories lose the multiplier (~70 pts instead of 205 pts progress), enforcing face-first navigation without PD override. Literature: Penicka et al. ICRA 2023 (arXiv 2210.01841) validates perception-aware reward shaping for camera-compatible teacher training.
+No yaw constraints — teacher approaches from any direction. Student CNN uses 360° panoramic camera so coin is always visible regardless of teacher heading.
 
 ## Key Hyperparameters
 
@@ -135,14 +134,14 @@ python viewers/watch_any.py  --stage 1 --stride 1      # slow-motion (1 step per
 | Body-frame observations | World-frame compass changes meaning as drone rotates — breaks ego-centric CNN distillation |
 | Gimbal-stabilized LiDAR | Full rotation matrix on 2D LiDAR causes projection shrinkage on pitch: effective range 5m→3.5m at 45° |
 | Progress reward | `alive_bonus − dist_penalty×dist` is negative at dist>1m → Suicide Policy at far coins |
-| Hover yaw activation | Stage 0 v7 trains hover + random yaw target jointly so action[2] is active before Stage 1; yaw_weight=0.5 makes threshold 7500 unreachable by hover alone |
+| 360° student camera | Teacher approaches coins from any direction; student CNN uses 3×120° panoramic camera so coin is always in view regardless of teacher heading |
 | `models/best/` canonical | AutoArchiveBestCallback keeps it current; safe cross-stage weight loading without brittle path coupling |
 
 ## Distillation (future)
 
 Once the Stage 6 (Apex) teacher is trained:
 - Teacher MLP (50-D privileged state → 4-D action) generates expert demonstrations
-- Student CNN (RGB/depth camera frames → 4-D action) via behavioral cloning / DAgger
-- Teacher's ego-centric obs design ensures action labels are camera-frame compatible
+- Student CNN (3×120° panoramic camera → 4-D action) via behavioral cloning / DAgger
+- Teacher approaches coins from any direction — student's 360° FOV means coin is always visible at some bearing, so BC labels are never ambiguous
+- Architecture: circular-padding CNN + GRU(256) + action history (12D) + IMU (6D)
 - Teacher's smoothness penalty ensures low-jerk trajectories → clean CNN training labels
-- Teacher trained with cos²(θ) alignment gate in Stage 1+; approaches within ~40° yaw error so coin stays in CNN camera FOV during approach trajectories
