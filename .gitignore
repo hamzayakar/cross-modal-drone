@@ -32,6 +32,7 @@ tb_logs/
 models/Stage_*/
 models/stage_*/
 models/best/
+models/legacy/
 *.zip
 *.pkl
 

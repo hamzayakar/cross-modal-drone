@@ -6,14 +6,13 @@ import numpy as np
 import math
 import os
 
-from .reward_functions import compute_dense_reward, compute_hover_reward, compute_face_reward
+from .reward_functions import compute_dense_reward, compute_hover_reward
 
 class RoomDroneEnv(gym.Env):
     def __init__(self, gui=False, num_obstacles=0, randomize_obstacles=False, randomize_coins=False,
                  reward_weights=None, hover_only=False, num_fixed_coins=4, fixed_spawn=False,
                  max_steps=10800, coin_count_range=(10, 18), coin_z_range=(1.5, 2.5),
-                 coin_spawn_radius=None, face_only=False, face_spawn_radius=3.0,
-                 face_threshold=0.95, face_consecutive_steps=10):
+                 coin_spawn_radius=None):
         super().__init__()
 
         self.client = p.connect(p.GUI if gui else p.DIRECT)
@@ -33,13 +32,11 @@ class RoomDroneEnv(gym.Env):
         self.coin_z_range = coin_z_range    # (z_min, z_max) for random coin Z placement
 
         self.coin_spawn_radius = coin_spawn_radius
-        # Face-only mode (Stage 1 FaceIt): drone learns pure yaw alignment before navigation.
-        # hover_only must also be True so the compass observation points to the face target.
-        self.face_only = face_only
-        self.face_spawn_radius = face_spawn_radius      # distance to virtual face target
-        self.face_threshold = face_threshold            # cos(θ) required for success
-        self.face_consecutive_steps = face_consecutive_steps  # steps to hold facing
-        self._face_streak = 0
+        # FOV masking: hide coin compass when outside forward cone. Forces yaw discovery.
+        # Default 180° = no masking (Stage 0 hover unaffected).
+        fov_deg = (reward_weights or {}).get('fov_half_degrees', 180)
+        self.fov_half = math.radians(fov_deg)
+        self._coin_in_fov = True   # updated each step; used by reward + viewer
         self.num_obstacles = num_obstacles
         self.randomize_obstacles = randomize_obstacles
         self.randomize_coins = randomize_coins
@@ -55,6 +52,7 @@ class RoomDroneEnv(gym.Env):
         else:
             self.hover_target = [0.0, 0.0, 2.0]
         
+        self.hover_yaw_target = 0.0   # randomized each reset when hover_only; trains action[2]
         self.drone_id = None
         self.wall_ids = []
         self.obstacle_ids = []
@@ -204,17 +202,8 @@ class RoomDroneEnv(gym.Env):
         p.setTimeStep(1.0 / 240.0)
         self.current_step = 0
         self.prev_action = np.zeros(4, dtype=np.float32)
-        self._face_streak = 0
-
-        # Face-only: randomize the face target each episode so the drone cannot memorize
-        # a fixed direction. hover_target is used as the compass anchor in _get_obs().
-        if self.face_only:
-            angle = self.np_random.uniform(0, 2 * math.pi)
-            self.hover_target = [
-                self.face_spawn_radius * math.cos(angle),
-                self.face_spawn_radius * math.sin(angle),
-                2.0
-            ]
+        if self.hover_only:
+            self.hover_yaw_target = self.np_random.uniform(-math.pi, math.pi)
 
         self.plane_id = p.loadURDF("plane.urdf")
         self._build_closed_room()
@@ -312,11 +301,16 @@ class RoomDroneEnv(gym.Env):
         
         # Compass: target relative position in Body Frame
         if self.hover_only:
-            # Compass points to virtual hover target [0, 0, 2.0] in body frame.
-            # Policy sees "target is X meters left, Y meters ahead, Z meters up" —
-            # same ego-centric structure as nav stages where target = nearest coin.
-            global_relative_pos = np.array(self.hover_target) - np.array(drone_pos)
-            local_relative_pos = rot_matrix.T.dot(global_relative_pos)
+            if self.reward_weights.get('hover_yaw_weight', 0.0) > 0.0:
+                # Yaw mode: compass = unit vector toward hover_yaw_target in body frame.
+                # Same structure as nav compass pointing to coin — policy learns
+                # "compass left → turn left" which transfers directly to Stage 1.
+                world_dir = np.array([math.cos(self.hover_yaw_target),
+                                      math.sin(self.hover_yaw_target), 0.0])
+                local_relative_pos = rot_matrix.T.dot(world_dir)  # unit vector
+            else:
+                global_relative_pos = np.array(self.hover_target) - np.array(drone_pos)
+                local_relative_pos = rot_matrix.T.dot(global_relative_pos)
         elif len(self.gold_data) > 0:
             distances = [math.sqrt(sum((d - val)**2 for d, val in zip(drone_pos, g["pos"])))
                          for g in self.gold_data]
@@ -324,8 +318,18 @@ class RoomDroneEnv(gym.Env):
             closest_pos = self.gold_data[closest_idx]["pos"]
             global_relative_pos = np.array([g - d for g, d in zip(closest_pos, drone_pos)])
             local_relative_pos = rot_matrix.T.dot(global_relative_pos)
+            # FOV masking: body +Y is forward. If coin outside ±fov_half, compass = zeros.
+            # Forces yaw exploration — progress reward is 0 until drone faces coin.
+            if self.fov_half < math.pi and distances[closest_idx] > 0.05:
+                yaw_err = abs(math.atan2(local_relative_pos[0], local_relative_pos[1]))
+                self._coin_in_fov = yaw_err <= self.fov_half
+                if not self._coin_in_fov:
+                    local_relative_pos = np.zeros(3)
+            else:
+                self._coin_in_fov = True
         else:
             local_relative_pos = np.array([0, 0, 0])
+            self._coin_in_fov = True
             
         lidar_data = self._compute_lidar(drone_pos, ori)
         
@@ -556,24 +560,9 @@ class RoomDroneEnv(gym.Env):
                 terminated   = True
                 break
 
-        # Face-only: check yaw alignment streak for success. No drift termination —
-        # the drone may hover anywhere near the center while turning.
-        if self.face_only and not terminated:
-            global_face = np.array(self.hover_target) - np.array(drone_pos)
-            face_dist = np.linalg.norm(global_face)
-            if face_dist > 0.05:
-                cos_to_target = rot_post.T.dot(global_face)[1] / face_dist  # body +Y forward
-                if cos_to_target > self.face_threshold:
-                    self._face_streak += 1
-                else:
-                    self._face_streak = 0
-                if self._face_streak >= self.face_consecutive_steps:
-                    is_success = True
-                    terminated = True
-
-        # Hover-only (not face_only): terminate if drone drifts too far from hover target.
+        # Hover-only: terminate if drone drifts too far from hover target.
         # max(0, 2-4·dist²) zeros at 0.71m; 1.0m gives a buffer and triggers fast reset.
-        if self.hover_only and not self.face_only and not terminated:
+        if self.hover_only and not terminated:
             hover_dist = math.sqrt(sum((drone_pos[i] - self.hover_target[i])**2 for i in range(3)))
             if hover_dist > 1.0:
                 terminated = True
@@ -586,20 +575,15 @@ class RoomDroneEnv(gym.Env):
         info['is_success'] = is_success
 
         # Compute Reward
-        if self.face_only:
-            global_face = np.array(self.hover_target) - np.array(drone_pos)
-            face_dist = np.linalg.norm(global_face)
-            cos_theta = (rot_post.T.dot(global_face)[1] / face_dist) if face_dist > 0.05 else 0.0
-            euler_post = p.getEulerFromQuaternion(ori)
-            reward = compute_face_reward(
-                cos_theta, euler_post[1], euler_post[0], local_ang_vel,
-                action_diff, is_success, self.reward_weights
-            )
-        elif self.hover_only:
+        if self.hover_only:
             reward = compute_hover_reward(
                 drone_pos, self.hover_target, drone_vel, current_pitch, current_roll,
                 local_ang_vel, action_diff, is_collision, self.reward_weights
             )
+            yaw_w = self.reward_weights.get('hover_yaw_weight', 0.0)
+            if yaw_w > 0.0:
+                euler_post = p.getEulerFromQuaternion(ori)
+                reward += yaw_w * math.cos(euler_post[2] - self.hover_yaw_target)
         else:
             # FIX (Stage 0.20): Use clean (pre-noise) LiDAR for reward computation.
             # _get_obs() injects Gaussian noise into the full observation vector.
@@ -608,13 +592,17 @@ class RoomDroneEnv(gym.Env):
             clean_lidar = self._compute_lidar(drone_pos, ori)
 
             # Body-frame compass for yaw alignment and velocity direction rewards.
-            # Reuse rot_post already computed from post-physics ori.
+            # Apply FOV mask: if coin outside forward cone, local_rel_post = zeros so
+            # all alignment-gated reward terms naturally return 0 (no special casing needed).
             if self.gold_data:
                 distances_r = [math.sqrt(sum((d - v)**2 for d, v in zip(drone_pos, g["pos"])))
                                 for g in self.gold_data]
                 nearest_pos = self.gold_data[int(np.argmin(distances_r))]["pos"]
                 global_rel  = np.array([g - d for g, d in zip(nearest_pos, drone_pos)])
                 local_rel_post = rot_post.T.dot(global_rel)
+                # Reward uses UNMASKED compass so yaw_alignment_reward fires even
+                # when coin is outside observation FOV. This provides the turning gradient
+                # that drives action[2] discovery — observation stays masked, reward does not.
             else:
                 local_rel_post = np.zeros(3)
 
@@ -626,6 +614,13 @@ class RoomDroneEnv(gym.Env):
                 local_relative_pos=local_rel_post,
                 reward_weights=self.reward_weights
             )
+
+            # FOV search reward: small bonus for yaw rotation when coin is outside FOV.
+            # This is the only non-zero gradient available when compass = zeros, forcing
+            # discovery of action[2] (yaw rate) which was never used in Stage 0 hover.
+            search_r = self.reward_weights.get('search_rotation_reward', 0.0)
+            if search_r > 0.0 and not self._coin_in_fov and not coin_collected:
+                reward += search_r * abs(local_ang_vel[2])
 
         return obs, reward, terminated, truncated, info
 
