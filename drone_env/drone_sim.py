@@ -32,11 +32,6 @@ class RoomDroneEnv(gym.Env):
         self.coin_z_range = coin_z_range    # (z_min, z_max) for random coin Z placement
 
         self.coin_spawn_radius = coin_spawn_radius
-        # FOV masking: hide coin compass when outside forward cone. Forces yaw discovery.
-        # Default 180° = no masking (Stage 0 hover unaffected).
-        fov_deg = (reward_weights or {}).get('fov_half_degrees', 180)
-        self.fov_half = math.radians(fov_deg)
-        self._coin_in_fov = True   # updated each step; used by reward + viewer
         self.num_obstacles = num_obstacles
         self.randomize_obstacles = randomize_obstacles
         self.randomize_coins = randomize_coins
@@ -52,7 +47,6 @@ class RoomDroneEnv(gym.Env):
         else:
             self.hover_target = [0.0, 0.0, 2.0]
         
-        self.hover_yaw_target = 0.0   # randomized each reset when hover_only; trains action[2]
         self.drone_id = None
         self.wall_ids = []
         self.obstacle_ids = []
@@ -202,9 +196,6 @@ class RoomDroneEnv(gym.Env):
         p.setTimeStep(1.0 / 240.0)
         self.current_step = 0
         self.prev_action = np.zeros(4, dtype=np.float32)
-        if self.hover_only:
-            self.hover_yaw_target = self.np_random.uniform(-math.pi, math.pi)
-
         self.plane_id = p.loadURDF("plane.urdf")
         self._build_closed_room()
         self._spawn_obstacles()
@@ -301,16 +292,8 @@ class RoomDroneEnv(gym.Env):
         
         # Compass: target relative position in Body Frame
         if self.hover_only:
-            if self.reward_weights.get('hover_yaw_weight', 0.0) > 0.0:
-                # Yaw mode: compass = unit vector toward hover_yaw_target in body frame.
-                # Same structure as nav compass pointing to coin — policy learns
-                # "compass left → turn left" which transfers directly to Stage 1.
-                world_dir = np.array([math.cos(self.hover_yaw_target),
-                                      math.sin(self.hover_yaw_target), 0.0])
-                local_relative_pos = rot_matrix.T.dot(world_dir)  # unit vector
-            else:
-                global_relative_pos = np.array(self.hover_target) - np.array(drone_pos)
-                local_relative_pos = rot_matrix.T.dot(global_relative_pos)
+            global_relative_pos = np.array(self.hover_target) - np.array(drone_pos)
+            local_relative_pos = rot_matrix.T.dot(global_relative_pos)
         elif len(self.gold_data) > 0:
             distances = [math.sqrt(sum((d - val)**2 for d, val in zip(drone_pos, g["pos"])))
                          for g in self.gold_data]
@@ -318,18 +301,8 @@ class RoomDroneEnv(gym.Env):
             closest_pos = self.gold_data[closest_idx]["pos"]
             global_relative_pos = np.array([g - d for g, d in zip(closest_pos, drone_pos)])
             local_relative_pos = rot_matrix.T.dot(global_relative_pos)
-            # FOV masking: body +Y is forward. If coin outside ±fov_half, compass = zeros.
-            # Forces yaw exploration — progress reward is 0 until drone faces coin.
-            if self.fov_half < math.pi and distances[closest_idx] > 0.05:
-                yaw_err = abs(math.atan2(local_relative_pos[0], local_relative_pos[1]))
-                self._coin_in_fov = yaw_err <= self.fov_half
-                if not self._coin_in_fov:
-                    local_relative_pos = np.zeros(3)
-            else:
-                self._coin_in_fov = True
         else:
             local_relative_pos = np.array([0, 0, 0])
-            self._coin_in_fov = True
             
         lidar_data = self._compute_lidar(drone_pos, ori)
         
@@ -580,10 +553,6 @@ class RoomDroneEnv(gym.Env):
                 drone_pos, self.hover_target, drone_vel, current_pitch, current_roll,
                 local_ang_vel, action_diff, is_collision, self.reward_weights
             )
-            yaw_w = self.reward_weights.get('hover_yaw_weight', 0.0)
-            if yaw_w > 0.0:
-                euler_post = p.getEulerFromQuaternion(ori)
-                reward += yaw_w * math.cos(euler_post[2] - self.hover_yaw_target)
         else:
             # FIX (Stage 0.20): Use clean (pre-noise) LiDAR for reward computation.
             # _get_obs() injects Gaussian noise into the full observation vector.

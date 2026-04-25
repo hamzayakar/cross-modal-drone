@@ -99,12 +99,6 @@ def draw_scene(env_raw):
     """Draw spawn marker, target marker, coins + collection zones. Call after reset."""
     if env_raw.hover_only:
         _sphere(env_raw.hover_target, 0.15, [1, 1, 0, 0.8])
-        # Draw yaw target direction arrow (blue) when hover_yaw_weight is active
-        if hasattr(env_raw, 'hover_yaw_target') and env_raw.reward_weights.get('hover_yaw_weight', 0) > 0:
-            ht = env_raw.hover_target
-            yaw = env_raw.hover_yaw_target
-            tip = [ht[0] + math.cos(yaw) * 1.5, ht[1] + math.sin(yaw) * 1.5, ht[2]]
-            p.addUserDebugLine(list(ht), tip, [0.2, 0.4, 1.0], 3, lifeTime=0)
     spawn_pos, _ = p.getBasePositionAndOrientation(env_raw.drone_id)
     _sphere(list(spawn_pos), 0.1, [0.2, 1.0, 0.1, 1.0])
     for g in env_raw.gold_data:

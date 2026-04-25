@@ -1,7 +1,5 @@
 # Reward Evolution — Index
 
-Full training history split into three files. Every line preserved.
-
 ---
 
 ## [1. Pre-Curriculum](history/pre_curriculum.md)

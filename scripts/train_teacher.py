@@ -134,7 +134,6 @@ if __name__ == "__main__":
     COIN_COUNT_RANGE      = tuple(stage_config.get('coin_count_range', [10, 18]))
     COIN_Z_RANGE          = tuple(stage_config.get('coin_z_range', [1.5, 2.5]))
     COIN_SPAWN_RADIUS     = stage_config.get('coin_spawn_radius', None)
-    SEED_WEIGHTS_FROM     = stage_config.get('seed_weights_from', None)
     if HOVER_ONLY:
         reward_weights = config['hover_rewards']
     else:
@@ -249,25 +248,6 @@ if __name__ == "__main__":
         else:
             env = VecNormalize(env_vec, norm_obs=True, norm_reward=True, clip_obs=10., gamma=0.9995)
         model = PPO.load(current_best_path, env=env, tensorboard_log=log_dir, ent_coef=0.005,
-                         learning_rate=linear_schedule(3e-4))
-
-    elif SEED_WEIGHTS_FROM:
-        # Load hover weights + VecNorm from a named run, but reset compass dims (11-13).
-        # v5 VecNorm has compass mean≈0, std≈0.01 (drone always near hover target).
-        # New compass is a unit direction vector (std≈0.5) — stale stats would saturate
-        # clip_obs=10 and destroy the direction signal. Resetting just those 3 dims gives
-        # the policy correct compass normalization from step 0 while keeping all other
-        # calibrated stats (altitude, vel, LiDAR) so hover skill works immediately.
-        seed_model_path  = os.path.join(best_dir, SEED_WEIGHTS_FROM, "best_model.zip")
-        seed_vecnorm_path = os.path.join(best_dir, SEED_WEIGHTS_FROM, "best_model_vecnormalize.pkl")
-        print(f"Seeding weights from {SEED_WEIGHTS_FROM} (compass dims reset)...")
-        env = VecNormalize.load(seed_vecnorm_path, env_vec)
-        env.training = True
-        env.norm_reward = True
-        env.gamma = 0.9995
-        env.obs_rms.mean[11:14] = 0.0
-        env.obs_rms.var[11:14]  = 0.25  # std=0.5 matches unit-vector distribution
-        model = PPO.load(seed_model_path, env=env, tensorboard_log=log_dir, ent_coef=0.005,
                          learning_rate=linear_schedule(3e-4))
 
     elif args.stage > 0 and os.path.exists(prev_vecnorm_path):

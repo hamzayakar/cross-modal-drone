@@ -22,7 +22,7 @@
 # ==========================================
 stages:
   stage_0:
-    run_name: "Stage_0_Hover_v8"
+    run_name: "Stage_0_Hover_v5"
     num_obstacles: 0
     randomize_obstacles: False
     randomize_coins: False
@@ -30,9 +30,8 @@ stages:
     num_fixed_coins: 0
     fixed_spawn: True
     max_steps: 3600
-    total_timesteps: 1000000  # hover already solved in seed — only yaw needs learning
-    reward_threshold: 8500    # v5 hover ~6200 + yaw_w=1.0*cos<50° → forces genuine alignment
-    seed_weights_from: "Stage_0_Hover_v5"  # load weights+vecnorm from v5, reset compass dims
+    total_timesteps: 10000000
+    reward_threshold: 6000
 
   stage_1:
     run_name: "Stage_1_Scout_v3"
@@ -116,33 +115,21 @@ hover_rewards:
   angular_velocity_penalty: 0.05
   smoothness_penalty: 0.05
   collision_penalty: 50.0
-  hover_yaw_weight: 1.0       # face a random direction while hovering — activates dormant action[2]
 
 # ==========================================
 # NAV REWARDS (Stage 1+)
 #
-# progress_uses_alignment: true — multiplies ALL progress reward by cos²(θ).
-#   Lateral slide (θ=90°) → 0 progress reward. No zero-gradient trap (continuous).
-#   This forces face-first approach without a separate yaw-alignment stage.
-# progress_reward_weight: 150 — overcomes hover deceleration prior (10M Stage 0
-#   steps baked "near target = slow" into weights; 3× stronger signal overrides it).
-# yaw_alignment_weight: 0.10 — small, always-active (NOT progress-gated).
-#   Always fires so drone has turning gradient during pure rotation (coin_progress=0).
+# Teacher approaches coins however it wants (diagonal, sideways, arc).
+# No yaw constraints. Student distillation uses 360° camera so coin is
+# always visible regardless of teacher heading — no face-first needed.
 # ==========================================
 nav_rewards:
-  progress_reward_weight: 150.0          # 50→150: overcome hover deceleration prior
-  progress_uses_alignment: true          # cos²(θ) gate — lateral slide earns 0
+  progress_reward_weight: 150.0
   approach_bonus_weight: 150.0
   approach_bonus_dist: 1.5
-  yaw_alignment_weight: 0.10             # small, always-active (no stalling, turning gradient)
-  yaw_alignment_dist: 5.0               # covers full approach at any stage distance
   velocity_direction_weight: 0.20
   smoothness_penalty_multiplier: 0.03
   lidar_penalty_multiplier: 0.5
   coin_collection_reward: 300.0
   success_bonus: 1000.0
   collision_penalty: 300.0
-  # FOV masking: coin compass zeroed when outside ±fov_half_degrees.
-  # search_rotation_reward: only non-zero gradient when compass=zeros, forces action[2] discovery.
-  fov_half_degrees: 60                   # ±60° = 120° total (typical wide-angle drone camera)
-  search_rotation_reward: 0.03          # rewards |yaw_rate| when coin outside FOV

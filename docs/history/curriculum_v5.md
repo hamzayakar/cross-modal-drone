@@ -293,3 +293,42 @@ Threshold forces genuine yaw alignment. Drone must consistently face within ~40�
 ### Expected outcome
 
 Drone learns hover + yaw simultaneously from scratch. action[2] gets real gradient from episode 0. After training, action[2] should be active and responsive to yaw error — enabling Stage 1 cos²(θ) gate to work.
+
+---
+
+## Face-First Abandoned — 360° Camera Decision
+
+**Date:** 2026-04-25
+
+### Summary of all failed face-first attempts
+
+After 15+ attempts across different approaches, all failed for the same root reason: **you cannot retrain a converged action dimension with reward engineering.** The teacher's action[2] (yaw_rate) was trained to zero by 4.48M hover steps, and every downstream fix found an alternate path to satisfy the reward proxy without actually rotating.
+
+Failed approaches in order:
+1. **FaceIt stage (×3):** Separate pre-nav yaw stage. Failed — hover prior overwhelmed yaw gradient.
+2. **cos²(θ) gate on progress:** Made sideways earn 0. Failed — action[2] dormant, no gradient to push it.
+3. **FOV masking:** Zeroed compass when coin outside FOV. Failed — same dormant action[2] problem.
+4. **Stage 0 v6 (scratch, yaw_w=0.15):** Threshold 6500 reachable by hover alone — no real yaw needed.
+5. **Stage 0 v7 (scratch, yaw_w=0.5):** Hover learning phase (0–2.5M steps) killed action[2] again. Plateau at 6400, never reached 7500.
+6. **Stage 0 v8 (v5 weights, yaw_w=1.0):** Drone flew toward the blue arrow tip, not rotated to face it — policy's baked-in "compass = position to fly to" semantic was preserved through weight loading.
+
+### The actual fix: 360° camera for student
+
+Proposed and validated by wiki research (Fly360, arXiv:2603.06573, 2026):
+
+**Teacher:** Keep as-is. Approaches coins however it wants. Remove all yaw constraints from nav rewards.
+
+**Student distillation:** 3 × 120° cameras at 0°/120°/240° body-frame yaw, concatenated into 768×64 panoramic strip. Coin always visible at some bearing in panorama. BC label = teacher action. Direction mapping is deterministic (bearing φ → action toward φ). No blank frames. No ambiguity.
+
+**Why this is genuinely different from all previous fixes:** Every previous fix tried to change the teacher. This changes the student's sensors to match what the teacher already does. Zero teacher retraining required.
+
+**Architecture for student:** circular-padding CNN (horizontal) + GRU(256) + action history (12D) + IMU (6D).
+
+### Curriculum plan from here
+
+- Stage 0: v5 ✓ (solved, no changes)
+- Stage 1: Scout (1 coin, random angle, 2m) — no yaw constraints
+- Stage 2: Navigator (4 fixed coins) — no yaw constraints  
+- Stage 3: Hunter (10-18 random coins, Z=[1.5,2.5]m)
+- Stage 4-6: obstacles introduced progressively
+- Distillation: teacher MLP → student CNN with 360° panoramic camera
