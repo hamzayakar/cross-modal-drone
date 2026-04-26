@@ -32,16 +32,16 @@ stages:
     reward_threshold: 6000
 
   stage_1:
-    run_name: "Stage_1_Scout_v4"
+    run_name: "Stage_1_Scout_v5"
     num_obstacles: 0
     randomize_obstacles: False
     randomize_coins: False
     hover_only: False
     num_fixed_coins: 1
     coin_spawn_radius: 2.0    # random angle each episode, fixed 2m radius
-    max_steps: 7200           # 30s
+    max_steps: 2400           # 10s — drone collects in 3-4s when working; 2.5× buffer
     total_timesteps: 2000000
-    reward_threshold: 1800.0
+    reward_threshold: 1600.0  # 20/20 collecting at ~1000 steps ≈ 1750; 1600 requires consistency
 
   stage_2:
     run_name: "Stage_2_Navigator_v5"
