@@ -257,16 +257,23 @@ if __name__ == "__main__":
         env.norm_reward = True
         env.gamma = 0.9995
 
-        # Compass VecNorm reset on hover→nav transition.
-        # Hover compass (obs dims 11-13) points to hover_target ~0.1-0.3m away → std≈0.1m.
-        # Nav compass points to coins up to 8m away. Stale stats normalize 2m coin to 20σ
-        # → saturates at clip_obs=10 → drone sees identical obs at 0.1m and 2m from coin.
-        # Reset to std=2m (var=4) so coins within 20m stay unsaturated.
+        # Hover→Nav VecNorm reset.
+        # Two problems when nav inherits hover VecNorm directly:
+        # 1. obs_rms compass dims (11-13): hover std≈0.1m, nav coins at 2-8m → normalized
+        #    to ±20 → clipped at ±10. Saturation preserves direction but the policy sees
+        #    "maximum urgency" (±10) even when coin is 0.1m away — can't sense proximity.
+        #    Reset compass to std=2m (var=4): coin at 2m → normalized=1.0, familiar to policy.
+        # 2. ret_rms: hover returns ~6000/episode, nav returns ~1600/episode. PPO divides
+        #    nav rewards by hover return scale → gradient appears 4× smaller → policy barely
+        #    updates → drone times out every episode without collecting.
+        #    Reset ret_rms so nav rewards are seen at full scale from step 1.
         prev_hover_only = config['stages'][prev_stage_key].get('hover_only', False)
         if prev_hover_only and not HOVER_ONLY:
-            print("Hover→Nav: resetting compass VecNorm dims 11-13 to nav scale (std=2m).")
+            print("Hover→Nav: resetting compass VecNorm (dims 11-13) and return normalisation.")
             env.obs_rms.mean[11:14] = 0.0
-            env.obs_rms.var[11:14]  = 4.0
+            env.obs_rms.var[11:14]  = 4.0   # std=2m — coin at 2m normalises to 1.0
+            env.ret_rms.mean[:]     = 0.0
+            env.ret_rms.var[:]      = 1.0    # fresh return scale — nav rewards seen at full magnitude
 
         if os.path.exists(prev_model_path):
             print(f"Found previous brain ({prev_run_name})! Loading weights...")

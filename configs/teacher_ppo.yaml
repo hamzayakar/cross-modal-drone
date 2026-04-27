@@ -32,7 +32,7 @@ stages:
     reward_threshold: 6000
 
   stage_1:
-    run_name: "Stage_1_Scout_v6"
+    run_name: "Stage_1_Scout_v7"
     num_obstacles: 0
     randomize_obstacles: False
     randomize_coins: False
@@ -125,7 +125,7 @@ nav_rewards:
   progress_reward_weight: 150.0
   approach_bonus_weight: 150.0
   approach_bonus_dist: 1.5
-  survival_penalty: 0.05           # -0.05/step: fast collection > slow; timeout naturally negative
+  survival_penalty: 0.01           # -0.01/step: fast collection > slow; timeout naturally negative
   smoothness_penalty_multiplier: 0.03
   lidar_penalty_multiplier: 0.5
   coin_collection_reward: 300.0
