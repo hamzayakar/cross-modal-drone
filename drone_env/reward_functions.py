@@ -50,17 +50,15 @@ def compute_dense_reward(drone_pos, drone_vel, action, current_distance, is_coll
     - approach_bonus: multiplies progress reward near coin (dist < approach_bonus_dist).
       Counters the hover-stage "slow near target" prior that transfers through
       curriculum weights — gives 3× signal in the exact zone where deceleration occurs.
-    - velocity_direction: rewards moving TOWARD the coin regardless of yaw.
-      dot(v̂, û_target) in body frame — trajectory constraint, not heading constraint.
-      Addresses squiggly paths from greedy progress reward without breaking
-      quadrotor omnidirectionality.
+    - survival_penalty: small constant cost per step. Rewards faster collection
+      and makes timeout episodes naturally negative.
     """
     if reward_weights is None:
         reward_weights = {
             'progress_reward_weight': 50.0,
             'approach_bonus_weight': 150.0,
             'approach_bonus_dist': 1.5,
-            'velocity_direction_weight': 0.20,
+            'survival_penalty': 0.05,
             'smoothness_penalty_multiplier': 0.03,
             'lidar_penalty_multiplier': 0.5,
             'coin_collection_reward': 300.0,
@@ -80,17 +78,10 @@ def compute_dense_reward(drone_pos, drone_vel, action, current_distance, is_coll
     if approach_bonus_weight > 0 and current_distance < approach_bonus_dist:
         reward += approach_bonus_weight * coin_progress
 
-    # ── Velocity direction alignment (trajectory straightness) ───────────────
-    # Rewards moving toward the coin, independent of heading.
-    # dot(v̂, û_target) in body frame.
-    vel_dir_weight = reward_weights.get('velocity_direction_weight', 0.0)
-    if vel_dir_weight > 0 and local_vel is not None and local_relative_pos is not None:
-        v_norm = np.linalg.norm(local_vel)
-        c_norm = current_distance
-        if v_norm > 0.05 and c_norm > 0.05:
-            v_hat = local_vel / v_norm
-            c_hat = local_relative_pos / c_norm
-            reward += vel_dir_weight * float(np.dot(v_hat, c_hat))
+    # ── Survival penalty (time pressure) ─────────────────────────────────────
+    # Small constant penalty per step. Fast collection > slow collection.
+    # Timeout episodes naturally accumulate negative reward without collecting.
+    reward -= reward_weights.get('survival_penalty', 0.0)
 
     # ── Smoothness penalty ───────────────────────────────────────────────────
     reward -= reward_weights.get('smoothness_penalty_multiplier', 0.02) * action_diff

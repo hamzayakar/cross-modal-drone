@@ -256,6 +256,18 @@ if __name__ == "__main__":
         env.training = True
         env.norm_reward = True
         env.gamma = 0.9995
+
+        # Compass VecNorm reset on hover→nav transition.
+        # Hover compass (obs dims 11-13) points to hover_target ~0.1-0.3m away → std≈0.1m.
+        # Nav compass points to coins up to 8m away. Stale stats normalize 2m coin to 20σ
+        # → saturates at clip_obs=10 → drone sees identical obs at 0.1m and 2m from coin.
+        # Reset to std=2m (var=4) so coins within 20m stay unsaturated.
+        prev_hover_only = config['stages'][prev_stage_key].get('hover_only', False)
+        if prev_hover_only and not HOVER_ONLY:
+            print("Hover→Nav: resetting compass VecNorm dims 11-13 to nav scale (std=2m).")
+            env.obs_rms.mean[11:14] = 0.0
+            env.obs_rms.var[11:14]  = 4.0
+
         if os.path.exists(prev_model_path):
             print(f"Found previous brain ({prev_run_name})! Loading weights...")
             model = PPO.load(prev_model_path, env=env, tensorboard_log=log_dir, ent_coef=0.005,
