@@ -272,8 +272,8 @@ if __name__ == "__main__":
             print("Hover→Nav: resetting compass VecNorm (dims 11-13) and return normalisation.")
             env.obs_rms.mean[11:14] = 0.0
             env.obs_rms.var[11:14]  = 4.0   # std=2m — coin at 2m normalises to 1.0
-            env.ret_rms.mean[:]     = 0.0
-            env.ret_rms.var[:]      = 1.0    # fresh return scale — nav rewards seen at full magnitude
+            env.ret_rms.mean        = 0.0
+            env.ret_rms.var         = 1.0    # fresh return scale — nav rewards seen at full magnitude
 
         if os.path.exists(prev_model_path):
             print(f"Found previous brain ({prev_run_name})! Loading weights...")
