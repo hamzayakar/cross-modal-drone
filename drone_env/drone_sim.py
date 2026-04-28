@@ -58,6 +58,8 @@ class RoomDroneEnv(gym.Env):
 
         self.prev_action = np.zeros(4, dtype=np.float32)
         self.prev_coin_distance = 0.0  # for progress reward: distance to nearest coin last step
+        self.current_target_idx = 0    # locked target index; only recomputed on collection or escape
+        self.steps_on_target = 0       # steps since last collection (for escape valve)
 
     def _build_closed_room(self):
         """Builds the 16x16m room with glass walls."""
@@ -241,14 +243,16 @@ class RoomDroneEnv(gym.Env):
         self.drone_id = p.loadURDF(urdf_path, start_pos, baseOrientation=start_ori, globalScaling=4.0)
         p.changeDynamics(self.drone_id, -1, mass=1.0)
 
-        # Initialise prev_coin_distance so first step doesn't spike a negative progress reward.
+        # Initialise target tracking and prev_coin_distance.
         if not self.hover_only and self.gold_data:
-            self.prev_coin_distance = min(
-                math.sqrt(sum((start_pos[i] - g["pos"][i])**2 for i in range(3)))
-                for g in self.gold_data
-            )
+            distances = [math.sqrt(sum((start_pos[i] - g["pos"][i])**2 for i in range(3)))
+                         for g in self.gold_data]
+            self.current_target_idx = int(np.argmin(distances))
+            self.prev_coin_distance = distances[self.current_target_idx]
         else:
+            self.current_target_idx = 0
             self.prev_coin_distance = 0.0
+        self.steps_on_target = 0
 
         return self._get_obs(), {}
 
@@ -295,11 +299,8 @@ class RoomDroneEnv(gym.Env):
             global_relative_pos = np.array(self.hover_target) - np.array(drone_pos)
             local_relative_pos = rot_matrix.T.dot(global_relative_pos)
         elif len(self.gold_data) > 0:
-            distances = [math.sqrt(sum((d - val)**2 for d, val in zip(drone_pos, g["pos"])))
-                         for g in self.gold_data]
-            closest_idx = np.argmin(distances)
-            closest_pos = self.gold_data[closest_idx]["pos"]
-            global_relative_pos = np.array([g - d for g, d in zip(closest_pos, drone_pos)])
+            target_pos = self.gold_data[self.current_target_idx]["pos"]
+            global_relative_pos = np.array([g - d for g, d in zip(target_pos, drone_pos)])
             local_relative_pos = rot_matrix.T.dot(global_relative_pos)
         else:
             local_relative_pos = np.array([0, 0, 0])
@@ -482,27 +483,42 @@ class RoomDroneEnv(gym.Env):
         coin_progress = 0.0
         if not self.hover_only:
             if len(self.gold_data) > 0:
-                distances = [math.sqrt(sum((d - val)**2 for d, val in zip(drone_pos, g["pos"])))
-                             for g in self.gold_data]
-                closest_idx = np.argmin(distances)
-                current_distance = distances[closest_idx]
+                self.current_target_idx = min(self.current_target_idx, len(self.gold_data) - 1)
+                target_pos = self.gold_data[self.current_target_idx]["pos"]
+                dx = drone_pos[0] - target_pos[0]
+                dy = drone_pos[1] - target_pos[1]
+                dz = drone_pos[2] - target_pos[2]
+                xy_dist = math.sqrt(dx*dx + dy*dy)
+                current_distance = math.sqrt(dx*dx + dy*dy + dz*dz)
 
-                if current_distance < 0.6:
-                    p.removeBody(self.gold_data[closest_idx]["id"])
-                    self.gold_data.pop(closest_idx)
+                # Cylinder collection zone: anisotropic to match drone dynamics.
+                # XY controlled by attitude (fast); Z by thrust (slow) — treat separately.
+                if xy_dist < 0.5 and abs(dz) < 0.6:
+                    p.removeBody(self.gold_data[self.current_target_idx]["id"])
+                    self.gold_data.pop(self.current_target_idx)
                     coin_collected = True
-                    # Reset prev_distance to next coin; don't count snap as progress.
+                    self.steps_on_target = 0
+                    # Lock onto nearest remaining coin; don't count snap as progress.
                     if self.gold_data:
                         next_distances = [math.sqrt(sum((d - val)**2 for d, val in zip(drone_pos, g["pos"])))
                                           for g in self.gold_data]
-                        self.prev_coin_distance = min(next_distances)
+                        self.current_target_idx = int(np.argmin(next_distances))
+                        self.prev_coin_distance = next_distances[self.current_target_idx]
                     else:
+                        self.current_target_idx = 0
                         self.prev_coin_distance = 0.0
                     coin_progress = 0.0
                 else:
-                    # Progress = distance closed toward nearest coin since last step.
                     coin_progress = self.prev_coin_distance - current_distance
                     self.prev_coin_distance = current_distance
+                    self.steps_on_target += 1
+                    # Escape valve: if locked on same target with no progress, recompute.
+                    if self.steps_on_target > 2000:
+                        all_dist = [math.sqrt(sum((d - val)**2 for d, val in zip(drone_pos, g["pos"])))
+                                    for g in self.gold_data]
+                        self.current_target_idx = int(np.argmin(all_dist))
+                        self.prev_coin_distance = all_dist[self.current_target_idx]
+                        self.steps_on_target = 0
 
             if len(self.gold_data) == 0:
                 is_success = True

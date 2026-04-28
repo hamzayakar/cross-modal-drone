@@ -55,7 +55,7 @@ stages:
     reward_threshold: 3200.0
 
   stage_3:
-    run_name: "Stage_3_Hunter_v1"
+    run_name: "Stage_3_Hunter_v2"
     num_obstacles: 0
     randomize_obstacles: False
     randomize_coins: True
@@ -64,8 +64,8 @@ stages:
     max_steps: 14400            # 60s — more coins + Z variation needs time
     total_timesteps: 10000000
     reward_threshold: 2500.0
-    coin_count_range: [4, 8]    # manageable count; Z variance is the new challenge
-    coin_z_range: [1.0, 4.0]    # full Z range — forces real 3D flight
+    coin_count_range: [4, 8]
+    coin_z_range: [1.5, 3.0]    # gradual Z intro: ±0.75m from hover baseline (was [1.0,4.0])
 
   stage_4:
     run_name: "Stage_4_Final_v1"
