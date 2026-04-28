@@ -17,7 +17,7 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from viewers.viewer_utils import load_stage, make_env, draw_scene, redraw_scene, draw_arrow, draw_trail, update_hud, draw_ghost_coin
+from viewers.viewer_utils import load_stage, make_env, draw_scene, redraw_scene, draw_arrow, draw_trail, update_hud, draw_ghost_coin, update_target_marker
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--stage',  type=int, default=0,  help='Curriculum stage (0=Hover, 1=Scout, ...)')
@@ -58,6 +58,8 @@ sid = hli = hri = hud_id = stage_id = None
 ep_r = ep_s = 0; ep_t = time.time(); step_r = 0.
 _tracked = [g['pos'][:] for g in env_raw.gold_data]
 _trail = None
+_target_marker = update_target_marker(env_raw)
+_prev_target_idx = env_raw.current_target_idx
 
 while True:
     done = False
@@ -70,6 +72,9 @@ while True:
         for pos in list(_tracked):
             if pos not in cur:
                 draw_ghost_coin(pos); _tracked.remove(pos)
+        if env_raw.current_target_idx != _prev_target_idx:
+            _target_marker = update_target_marker(env_raw, _target_marker)
+            _prev_target_idx = env_raw.current_target_idx
 
     if done:
         print(f"Episode | steps={ep_s} sim={ep_s/240:.1f}s R={ep_r:.1f} [{model_name}]")
@@ -79,6 +84,8 @@ while True:
         time.sleep(1.0)
         redraw_scene(env_raw); ep_t = time.time()
         _tracked = [g['pos'][:] for g in env_raw.gold_data]
+        _target_marker = update_target_marker(env_raw)
+        _prev_target_idx = env_raw.current_target_idx
         new_path, new_vn, new_name = _find_model()
         if new_path:
             model_path, vecn_path, model_name = new_path, new_vn, new_name

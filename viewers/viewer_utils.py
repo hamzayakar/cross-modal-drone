@@ -14,7 +14,14 @@ import pybullet as p
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from drone_env.drone_sim import RoomDroneEnv
 
-COLLECTION_RADIUS = 0.35  # must match drone_sim.py — wing tip (~0.30m) + coin radius (0.12m) ≈ 0.35m
+# Collection zone display constants.
+# Actual threshold in drone_sim: cylinder XY<0.5m, |dZ|<0.6m (center-to-center).
+# Drone arm span ~0.25m, so when arm tip enters the XY=0.5 cylinder, center is ~0.25m away.
+# COLLECTION_RADIUS=0.35 is the center-equivalent display radius: shows where the drone body
+# (not just center) would physically reach the collection boundary. Do not change to 0.5/0.6.
+COLLECTION_RADIUS = 0.35
+COLLECT_XY = 0.5   # must match drone_sim.py cylinder XY radius
+COLLECT_DZ = 0.6   # must match drone_sim.py cylinder half-height
 
 
 # ── Config & environment ───────────────────────────────────────────────────────
@@ -59,8 +66,25 @@ def draw_coin(pos):
 
 
 def draw_collection_zone(pos):
-    """Very transparent yellow sphere showing the 0.6m collection radius."""
-    _sphere(pos, COLLECTION_RADIUS, [1, 0.84, 0, 0.07])
+    """Transparent yellow cylinder showing the collection zone (XY<0.5m, |dZ|<0.6m)."""
+    vis = p.createVisualShape(p.GEOM_CYLINDER, radius=COLLECT_XY, length=COLLECT_DZ * 2,
+                              rgbaColor=[1, 0.84, 0, 0.07])
+    p.createMultiBody(baseMass=0, baseVisualShapeIndex=vis, basePosition=list(pos))
+
+
+def update_target_marker(env_raw, marker_id=None):
+    """Draw/update a cyan ▼ beacon above the active target coin. Returns marker_id."""
+    if env_raw.hover_only or not env_raw.gold_data:
+        if marker_id is not None:
+            p.addUserDebugText("", [0, 0, 0], textColorRGB=[0, 1, 1],
+                               lifeTime=0.001, replaceItemUniqueId=marker_id)
+        return marker_id
+    idx = min(env_raw.current_target_idx, len(env_raw.gold_data) - 1)
+    pos = env_raw.gold_data[idx]['pos']
+    label_pos = [pos[0], pos[1], pos[2] + 0.55]
+    kw = {'replaceItemUniqueId': marker_id} if marker_id is not None else {}
+    return p.addUserDebugText("▼ TARGET", label_pos,
+                              textColorRGB=[0, 1, 1], textSize=1.3, lifeTime=0, **kw)
 
 
 def draw_ghost_coin(pos):
@@ -119,9 +143,10 @@ def _dist_label(env_raw, drone_pos, rot):
         d = np.linalg.norm(np.array(drone_pos) - np.array(env_raw.hover_target))
         return f"d={d:.2f}m"
     elif env_raw.gold_data:
-        d = min(math.sqrt(sum((a - b) ** 2 for a, b in zip(drone_pos, g['pos'])))
-                for g in env_raw.gold_data)
-        return f"d={d:.2f}m"
+        idx = min(env_raw.current_target_idx, len(env_raw.gold_data) - 1)
+        tp = env_raw.gold_data[idx]['pos']
+        d = math.sqrt(sum((a - b) ** 2 for a, b in zip(drone_pos, tp)))
+        return f"d={d:.2f}m ({len(env_raw.gold_data)} left)"
     return "done"
 
 
