@@ -31,12 +31,14 @@ First curriculum attempt (v1–v4): Hover → Scout (trivially solved 120K) → 
 
 ## [3. Curriculum v5 — current](history/curriculum_v5.md)
 
-v5 full restart to present. Stage 0 v5 solved, Stage 1 failures, FaceIt abandoned, Stage 0 yaw activation v6–v7.
+v5 restart through Stage 2 completion and professor's scope decision.
 
 **Key milestones:**
 - Stage 0 v5: solved at 4.48M steps, mean 6200, 20/20 × 3 evals
-- Stage 1 v2: arc-trajectory failure (approach_bonus dominated yaw)
-- Stage 1 v3: stall-and-face exploit (per-step yaw > collection reward)
-- FaceIt: 3 failures — VecNorm mismatch, hover prior, unvalidated in literature
-- Stage 0 v6: yaw_weight=0.15 too weak (hover alone passed threshold)
-- Stage 0 v7: yaw_weight=0.5, threshold=7500 — hover alone cannot pass ← **current**
+- FaceIt: 3 failures → abandoned → 360° camera pivot for student
+- Stage 1 Scout v7: solved (19/20, ~5% crash rate structural)
+  - velocity_direction exploit discovered + fixed
+  - hover→nav VecNorm (compass dims + ret_rms) reset required
+- Stage 2 Navigator v5: solved (19/20, 3675 mean)
+- **Professor direction:** random coins + 2-3 obstacles sufficient for distillation → skip Stages 4-6
+- **Next:** Stage 3 Final (6-10 random coins + 3 random obstacles) → distillation

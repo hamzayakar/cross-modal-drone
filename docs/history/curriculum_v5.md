@@ -332,3 +332,86 @@ Proposed and validated by wiki research (Fly360, arXiv:2603.06573, 2026):
 - Stage 3: Hunter (10-18 random coins, Z=[1.5,2.5]m)
 - Stage 4-6: obstacles introduced progressively
 - Distillation: teacher MLP → student CNN with 360° panoramic camera
+
+---
+
+## Stage 1 — Scout: Full History (v1–v7)
+
+**Date:** 2026-04-26 to 2026-04-27
+
+### Setup
+1 coin at random angle, 2m radius from origin, Z=2m. Drone spawns at [±0.5m, ±0.5m, 2m] with random yaw. nav_rewards loaded from v5 hover (Stage_0_Hover_v5).
+
+### v1–v3: Failed (pre-360° pivot, yaw-related)
+Scout v1–v3 had yaw alignment rewards (cos²(θ) gate etc.) that were removed when we pivoted to 360° camera approach. Archived.
+
+### v4 (first clean attempt): velocity_direction exploit
+**Config:** max_steps=7200 (30s), threshold=1800, progress+approach_bonus+velocity_direction rewards.
+**Result:** Peaked at 1936 (560K steps) then degraded every eval. ep_len grew from ~1459 to ~4897.
+**Root cause found by user:** Longer episodes got MORE reward — 6.3s R=1934 beat 3.6s R=1753 for same task. `velocity_direction × steps` rewarded slow zigzag paths over fast direct collection. Classic temporal exploitation (Ng et al. potential-based shaping literature confirms this is a known pathology).
+
+### v5: episode length fix
+**Config:** max_steps=2400 (10s), same rewards.
+**Result:** Same pattern. 1782 at 140K → degraded every eval.
+**Root cause:** Same velocity_direction exploit, just faster. Also confirmed: failure mode is crashes (7.5%), NOT timeouts (0%). Drone finds coin but crashes during approach.
+
+### v6: velocity_direction removed, survival_penalty added
+**Config:** Remove velocity_direction, add survival_penalty=0.05/step.
+**Result:** Catastrophic — every episode timed out, mean=-14. 0% collection.
+**Root cause:** Two problems combined: (1) hover VecNorm ret_rms calibrated to hover returns (~6000/ep); nav returns (~1600/ep) appear 4× smaller to PPO → gradient invisible. (2) survival_penalty made net reward near-zero when not collecting → drone sat still.
+
+### v7 (solved): VecNorm reset + ret_rms reset + survival_penalty=0.01
+**Config:** On hover→nav transition: reset compass VecNorm dims 11-13 (var=4.0, std=2m) + reset ret_rms to (mean=0, var=1). survival_penalty=0.01/step.
+**Session 1:** Slow start (timeouts early), gradually improved. Peaked at 1514 at 1680K, budget (2M) ran out.
+**Session 2 (resumed):** Started at 1329 immediately, peaked 1634 at 1820K.
+**Final best model:** mean=3675 at 4620K equivalent, 19/20 collecting in best eval. 1 crash per 20 episodes (~5% crash rate from tilt instability during aggressive approach — structural, not fixable without architecture changes).
+
+**Key lessons:**
+- velocity_direction (per-step dot product) always exploited by taking longer paths
+- Hover→nav VecNorm transition must reset: compass dims (hover std≈0.1m → nav std≈2m) AND ret_rms (hover returns ≠ nav returns)
+- Crash rate ~5% is structural (dormant action[2] → aggressive lateral approaches)
+- Episode length: 10s (2400 steps) appropriate for 2m coin
+
+---
+
+## Stage 2 — Navigator v5: History
+
+**Date:** 2026-04-27 to 2026-04-28
+
+### Setup
+4 fixed coins at [1,0,2], [0,2,2], [-2.5,1.5,2], [-1.5,-2.5,2] (clockwise ring). Random drone spawn [±0.5m, ±0.5m]. max_steps=10800 (45s). threshold=2500.
+
+### Session 1 (threshold=2500)
+Highly oscillatory: 678 to 2801 over 6.3M steps. Three consecutive above 2500 at ~6M steps (2642, 2697, 2684) → stopped.
+Visually messy. ep_len ballooning to 4316 (18s for 4 coins).
+
+### Session 2 (threshold raised to 3200)
+Resumed from session 1 best. Started immediately at 3113 (140K), 3230 (280K). Then degraded and oscillated. Never hit 3200 three consecutive times.
+
+**Best model:** 19/20 collecting all 4 coins, 1 crash. ep_len ~3963 at peak. Mean=3675 in best eval (19/20 × ~3690 expected per 4-coin collection).
+
+**Key observations:**
+- Policy peaks early after resuming from checkpoint, then PPO degrades it — same instability as Stage 1
+- The messy visuals are the dormant action[2] structural issue (lateral/diagonal approaches) — accepted, 360° camera handles this at distillation
+- 19/20 = good enough; the 1/20 crash is the same tilt instability seen at Stage 1
+- In live watching: ~3-4/20 failures because eval used fixed seeds that happened to avoid the bad spawns
+
+---
+
+## Curriculum Pivot — Professor's Direction
+
+**Date:** 2026-04-28
+
+Professor's feedback: "make coins a bit random, add variant-length obstacles — just a few (2-3). Random coins + 2-3 obstacles to show real obstacle avoidance is enough for distillation. Don't go for very hard level designs."
+
+### Revised plan
+Original: Stage 0 → 1 → 2 → 3 (10-18 coins, no obstacles) → 4 (20 obstacles) → 5 → 6 → distillation
+**New:** Stage 0 → 1 → 2 → **Stage 3 Final** (6-10 random coins + 3 random obstacles) → distillation
+
+Stage 3 Final combines:
+- Random coin placement (generalized search)
+- 2-3 random obstacles (shows real obstacle avoidance for thesis)
+- Trainable in reasonable time from Stage 2 weights
+- Sufficient for demonstrating full teacher capability before CNN distillation
+
+Skipping Stages 4-6 entirely. The professor confirmed this scope is appropriate for a senior thesis demonstrating the full MLP→CNN distillation pipeline.

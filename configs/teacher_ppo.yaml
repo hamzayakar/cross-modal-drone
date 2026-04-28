@@ -52,31 +52,33 @@ stages:
     num_fixed_coins: 4
     max_steps: 10800          # 45s — ~26s minimum path for 4-coin ring
     total_timesteps: 10000000
-    reward_threshold: 2500.0
+    reward_threshold: 3200.0
 
   stage_3:
-    run_name: "Stage_3_Hunter_v2"
+    run_name: "Stage_3_Hunter_v1"
     num_obstacles: 0
     randomize_obstacles: False
     randomize_coins: True
     hover_only: False
-    num_fixed_coins: 4        # unused when randomize_coins=True
-    max_steps: 10800
+    num_fixed_coins: 4          # unused when randomize_coins=True
+    max_steps: 14400            # 60s — more coins + Z variation needs time
     total_timesteps: 10000000
-    reward_threshold: 2000.0
-    coin_count_range: [10, 18]
-    coin_z_range: [1.5, 2.5]  # constrained to Z≈2m — XY generalization only
+    reward_threshold: 2500.0
+    coin_count_range: [4, 8]    # manageable count; Z variance is the new challenge
+    coin_z_range: [1.0, 4.0]    # full Z range — forces real 3D flight
 
   stage_4:
-    run_name: "Stage_4_Pathfinder_v1"
-    num_obstacles: 20
-    randomize_obstacles: False
-    randomize_coins: False
+    run_name: "Stage_4_Final_v1"
+    num_obstacles: 3
+    randomize_obstacles: True   # random cylinders + boxes, varying height
+    randomize_coins: True
     hover_only: False
-    num_fixed_coins: 4
-    max_steps: 14400          # 60s — obstacles slow navigation
+    num_fixed_coins: 4          # unused when randomize_coins=True
+    max_steps: 14400            # 60s
     total_timesteps: 10000000
-    reward_threshold: 1500.0
+    reward_threshold: 2000.0
+    coin_count_range: [4, 8]
+    coin_z_range: [1.0, 4.0]   # same Z range as Stage 3, now with obstacles
 
   stage_5:
     run_name: "Stage_5_Pioneer_v1"
