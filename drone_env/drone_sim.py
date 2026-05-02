@@ -58,8 +58,7 @@ class RoomDroneEnv(gym.Env):
 
         self.prev_action = np.zeros(4, dtype=np.float32)
         self.prev_coin_distance = 0.0  # for progress reward: distance to nearest coin last step
-        self.current_target_idx = 0    # locked target index; only recomputed on collection or escape
-        self.steps_on_target = 0       # steps since last collection (for escape valve)
+        self.current_target_idx = 0    # locked target; only recomputed when a coin is collected
 
     def _build_closed_room(self):
         """Builds the 16x16m room with glass walls."""
@@ -252,7 +251,6 @@ class RoomDroneEnv(gym.Env):
         else:
             self.current_target_idx = 0
             self.prev_coin_distance = 0.0
-        self.steps_on_target = 0
 
         return self._get_obs(), {}
 
@@ -494,7 +492,6 @@ class RoomDroneEnv(gym.Env):
                     p.removeBody(self.gold_data[self.current_target_idx]["id"])
                     self.gold_data.pop(self.current_target_idx)
                     coin_collected = True
-                    self.steps_on_target = 0
                     # Lock onto nearest remaining coin; don't count snap as progress.
                     if self.gold_data:
                         next_distances = [math.sqrt(sum((d - val)**2 for d, val in zip(drone_pos, g["pos"])))
@@ -508,14 +505,6 @@ class RoomDroneEnv(gym.Env):
                 else:
                     coin_progress = self.prev_coin_distance - current_distance
                     self.prev_coin_distance = current_distance
-                    self.steps_on_target += 1
-                    # Escape valve: if locked on same target with no progress, recompute.
-                    if self.steps_on_target > 2000:
-                        all_dist = [math.sqrt(sum((d - val)**2 for d, val in zip(drone_pos, g["pos"])))
-                                    for g in self.gold_data]
-                        self.current_target_idx = int(np.argmin(all_dist))
-                        self.prev_coin_distance = all_dist[self.current_target_idx]
-                        self.steps_on_target = 0
 
             if len(self.gold_data) == 0:
                 is_success = True
