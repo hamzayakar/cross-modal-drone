@@ -55,30 +55,30 @@ stages:
     reward_threshold: 3200.0
 
   stage_3:
-    run_name: "Stage_3_Hunter_v2"
+    run_name: "Stage_3_Hunter_v3"
     num_obstacles: 0
     randomize_obstacles: False
     randomize_coins: True
     hover_only: False
-    num_fixed_coins: 4          # unused when randomize_coins=True
-    max_steps: 14400            # 60s — more coins + Z variation needs time
+    num_fixed_coins: 4
+    max_steps: 10800            # 45s — coins at fixed Z=2m, no altitude challenge
     total_timesteps: 10000000
-    reward_threshold: 2500.0
+    reward_threshold: 1200.0
     coin_count_range: [4, 8]
-    coin_z_range: [1.5, 3.0]    # gradual Z intro: ±0.75m from hover baseline (was [1.0,4.0])
+    coin_z_range: [2.0, 2.0]   # fixed Z=2m — no altitude variance, keep it simple
 
   stage_4:
     run_name: "Stage_4_Final_v1"
     num_obstacles: 3
-    randomize_obstacles: True   # random cylinders + boxes, varying height
+    randomize_obstacles: True
     randomize_coins: True
     hover_only: False
-    num_fixed_coins: 4          # unused when randomize_coins=True
-    max_steps: 14400            # 60s
+    num_fixed_coins: 4
+    max_steps: 10800
     total_timesteps: 10000000
-    reward_threshold: 2000.0
+    reward_threshold: 1200.0
     coin_count_range: [4, 8]
-    coin_z_range: [1.0, 4.0]   # same Z range as Stage 3, now with obstacles
+    coin_z_range: [2.0, 2.0]   # still fixed Z=2m — obstacle avoidance is the new challenge
 
   stage_5:
     run_name: "Stage_5_Pioneer_v1"
