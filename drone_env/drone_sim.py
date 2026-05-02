@@ -164,7 +164,7 @@ class RoomDroneEnv(gym.Env):
                 self.gold_data.append({"id": gid, "pos": pos})
             return
 
-        num_coins = np.random.randint(self.coin_count_range[0], self.coin_count_range[1])
+        num_coins = np.random.randint(self.coin_count_range[0], self.coin_count_range[1] + 1)
         attempts = 0
 
         while len(self.gold_data) < num_coins and attempts < 200:
