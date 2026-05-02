@@ -52,6 +52,7 @@ def make_env(sc, rw):
         max_steps=sc.get('max_steps', 10800),
         coin_count_range=sc.get('coin_count_range', [4, 8]),
         coin_z_range=sc.get('coin_z_range', [1.5, 2.5]),
+        coin_spawn_area=sc.get('coin_spawn_area', 7.0),
     )
 
 

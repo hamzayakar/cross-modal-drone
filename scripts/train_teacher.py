@@ -134,6 +134,7 @@ if __name__ == "__main__":
     COIN_COUNT_RANGE      = tuple(stage_config.get('coin_count_range', [10, 18]))
     COIN_Z_RANGE          = tuple(stage_config.get('coin_z_range', [1.5, 2.5]))
     COIN_SPAWN_RADIUS     = stage_config.get('coin_spawn_radius', None)
+    COIN_SPAWN_AREA       = stage_config.get('coin_spawn_area', 7.0)
     if HOVER_ONLY:
         reward_weights = config['hover_rewards']
     else:
@@ -182,6 +183,7 @@ if __name__ == "__main__":
                 coin_count_range=COIN_COUNT_RANGE,
                 coin_z_range=COIN_Z_RANGE,
                 coin_spawn_radius=COIN_SPAWN_RADIUS,
+                coin_spawn_area=COIN_SPAWN_AREA,
             )
             monitor_path = os.path.join(stage_model_dir, "monitor.csv") if rank == 0 else None
             return Monitor(env, monitor_path)
@@ -202,6 +204,7 @@ if __name__ == "__main__":
         coin_count_range=COIN_COUNT_RANGE,
         coin_z_range=COIN_Z_RANGE,
         coin_spawn_radius=COIN_SPAWN_RADIUS,
+        coin_spawn_area=COIN_SPAWN_AREA,
     )
     eval_env_mon = Monitor(eval_env_raw)
     eval_env_vec = DummyVecEnv([lambda e=eval_env_mon: e])

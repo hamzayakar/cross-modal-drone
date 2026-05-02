@@ -12,7 +12,7 @@ class RoomDroneEnv(gym.Env):
     def __init__(self, gui=False, num_obstacles=0, randomize_obstacles=False, randomize_coins=False,
                  reward_weights=None, hover_only=False, num_fixed_coins=4, fixed_spawn=False,
                  max_steps=10800, coin_count_range=(10, 18), coin_z_range=(1.5, 2.5),
-                 coin_spawn_radius=None):
+                 coin_spawn_radius=None, coin_spawn_area=7.0):
         super().__init__()
 
         self.client = p.connect(p.GUI if gui else p.DIRECT)
@@ -32,6 +32,7 @@ class RoomDroneEnv(gym.Env):
         self.coin_z_range = coin_z_range    # (z_min, z_max) for random coin Z placement
 
         self.coin_spawn_radius = coin_spawn_radius
+        self.coin_spawn_area = coin_spawn_area  # XY half-extent for random coin spawning
         self.num_obstacles = num_obstacles
         self.randomize_obstacles = randomize_obstacles
         self.randomize_coins = randomize_coins
@@ -168,8 +169,9 @@ class RoomDroneEnv(gym.Env):
 
         while len(self.gold_data) < num_coins and attempts < 200:
             attempts += 1
-            pos = [np.random.uniform(-7.0, 7.0),
-                   np.random.uniform(-7.0, 7.0),
+            a = self.coin_spawn_area
+            pos = [np.random.uniform(-a, a),
+                   np.random.uniform(-a, a),
                    np.random.uniform(self.coin_z_range[0], self.coin_z_range[1])]
             
             if math.sqrt(pos[0]**2 + pos[1]**2 + (pos[2]-1.0)**2) < 1.0:
