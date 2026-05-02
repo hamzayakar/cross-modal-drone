@@ -50,6 +50,8 @@ def make_env(sc, rw):
         fixed_spawn=sc.get('fixed_spawn', False),
         coin_spawn_radius=sc.get('coin_spawn_radius'),
         max_steps=sc.get('max_steps', 10800),
+        coin_count_range=sc.get('coin_count_range', [4, 8]),
+        coin_z_range=sc.get('coin_z_range', [1.5, 2.5]),
     )
 
 
