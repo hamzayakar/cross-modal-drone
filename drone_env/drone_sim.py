@@ -488,12 +488,9 @@ class RoomDroneEnv(gym.Env):
                 dx = drone_pos[0] - target_pos[0]
                 dy = drone_pos[1] - target_pos[1]
                 dz = drone_pos[2] - target_pos[2]
-                xy_dist = math.sqrt(dx*dx + dy*dy)
                 current_distance = math.sqrt(dx*dx + dy*dy + dz*dz)
 
-                # Cylinder collection zone: anisotropic to match drone dynamics.
-                # XY controlled by attitude (fast); Z by thrust (slow) — treat separately.
-                if xy_dist < 0.5 and abs(dz) < 0.6:
+                if current_distance < 0.6:
                     p.removeBody(self.gold_data[self.current_target_idx]["id"])
                     self.gold_data.pop(self.current_target_idx)
                     coin_collected = True

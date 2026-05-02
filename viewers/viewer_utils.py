@@ -66,10 +66,8 @@ def draw_coin(pos):
 
 
 def draw_collection_zone(pos):
-    """Transparent yellow cylinder showing the collection zone (XY<0.5m, |dZ|<0.6m)."""
-    vis = p.createVisualShape(p.GEOM_CYLINDER, radius=COLLECT_XY, length=COLLECT_DZ * 2,
-                              rgbaColor=[1, 0.84, 0, 0.07])
-    p.createMultiBody(baseMass=0, baseVisualShapeIndex=vis, basePosition=list(pos))
+    """Transparent yellow sphere showing the 0.6m collection radius."""
+    _sphere(pos, COLLECTION_RADIUS, [1, 0.84, 0, 0.07])
 
 
 def update_target_marker(env_raw, marker_id=None):
@@ -83,7 +81,7 @@ def update_target_marker(env_raw, marker_id=None):
     pos = env_raw.gold_data[idx]['pos']
     label_pos = [pos[0], pos[1], pos[2] + 0.55]
     kw = {'replaceItemUniqueId': marker_id} if marker_id is not None else {}
-    return p.addUserDebugText("▼ TARGET", label_pos,
+    return p.addUserDebugText("[TGT]", label_pos,
                               textColorRGB=[0, 1, 1], textSize=1.3, lifeTime=0, **kw)
 
 
