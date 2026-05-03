@@ -41,4 +41,8 @@ v5 restart through Stage 2 completion and professor's scope decision.
   - hover→nav VecNorm (compass dims + ret_rms) reset required
 - Stage 2 Navigator v5: solved (19/20, 3675 mean)
 - **Professor direction:** random coins + 2-3 obstacles sufficient for distillation → skip Stages 4-6
-- **Next:** Stage 3 Final (6-10 random coins + 3 random obstacles) → distillation
+- Stage 3 Hunter v4: **VALIDATED** — 20/20, mean=4074, 7.84M steps
+- Scope reduced: 4 coins, no obstacles, Z=2m fixed — distillation started
+- Distillation pipeline implemented (collect_teacher_data, student_cnn, train_student_a/b)
+- Visual issue discovered: 192×24 grayscale, coins 2.4px/0.06 contrast — below viable threshold
+- **Next:** v2 collection — RGB, larger coins (radius 0.25m), darker floor

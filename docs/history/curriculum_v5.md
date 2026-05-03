@@ -415,3 +415,105 @@ Stage 3 Final combines:
 - Sufficient for demonstrating full teacher capability before CNN distillation
 
 Skipping Stages 4-6 entirely. The professor confirmed this scope is appropriate for a senior thesis demonstrating the full MLP→CNN distillation pipeline.
+
+---
+
+## Stage 3 — Hunter (4 Random Coins, No Obstacles)
+
+**Date:** 2026-04-29 to 2026-05-03
+
+### Scope Reduction Decision
+
+After professor direction toward "6-10 coins + 2-3 obstacles", a further simplification was made during training: Stage 3 was fixed at **4 random coins, no obstacles, 4m spawn area, Z=2m fixed**. Reasoning:
+- The thesis contribution is the MLP→CNN distillation comparison, not teacher perfection
+- Obstacles add complexity without changing the distillation research question
+- 4 coins requires generalised spatial search (no memorisation) — sufficient novelty
+- Stage 3 v4 validated at 20/20, threshold crossed → distillation started immediately
+
+Stages 4-6 skipped entirely.
+
+### v1 — Z-Height Distribution Shift
+
+**Bug:** coin_z_range=[1.0, 4.0]. Agent trained exclusively at Z=2m through all prior stages. Z=4m = 2m extrapolation never encountered.
+**Result:** 863 best reward at 6.16M steps. Oscillations, never crossed 4000 threshold.
+**Fix:** Remove Z variance entirely for Stage 3. All coins fixed at Z=2.0m. Novelty is XY generalisation only.
+
+### v2 — Escape Valve + Collection Zone Confusion
+
+**Setup:** Z=[1.5, 3.0], cylinder collection zone.
+**Bug:** Escape valve (redirect target after 2000 steps without collection) fired *during valid approaches*. For a target 10m away, approach at normal speed takes ~8.3s = exactly 2000 steps. Valve triggered during legitimate approach, redirecting to a different target at the moment of arrival.
+**Observed:** Chaotic trajectories in viewer — arcs, abrupt direction changes, failures within centimetres of target.
+**Result:** 711 best reward, persistent oscillations.
+**Fix (for v4):** Remove escape valve entirely. With Z=2m fixed no permanent deadlock is possible.
+
+### v3 — randint Bug (1-step crash)
+
+**Bug:** `np.random.randint(8, 8)` — high bound is exclusive in numpy. When coin_count_range=(8,8), randint(8,8) raises ValueError immediately.
+**Result:** Crash at episode 1 step 1.
+**Fix:** Use `randint(low, high+1)` or ensure low < high.
+
+### v4 — Final Result ✓ VALIDATED
+
+**Setup:** 4 coins, Z=2.0m fixed, XY random in [-4, 4]m, no obstacles, max_steps=14400, threshold=4000.
+**Training:** 10M steps total. Two sessions.
+**Best eval:** Step 7,840,000. Mean=4,074 (threshold 4,000). **SR=20/20.**
+**PPO oscillation:** Prevented 3 consecutive threshold crossings. Best model retained via AutoArchiveBestCallback.
+**Structural crash rate:** ~5% per coin approach (dormant action[2] / lateral tilt instability). For 4 sequential coins: P(≥1 crash) = 1-(0.95)^4 ≈ 19%. Observed: typical eval 17-19/20. The 20/20 eval is the statistical peak — policy is capable, oscillation is the noise.
+
+**Decision:** Accept. Teacher is sufficient for distillation. Move on.
+
+---
+
+## Distillation Phase — Pipeline Implementation
+
+**Date:** 2026-05-03
+
+### Architecture
+
+**Student observation:** 360° panoramic camera (3 × 120° cameras at 0°, 120°, 240° relative to drone yaw) + proprioception.
+
+**Why 360°:** Six FaceIt attempts (v1-v8) failed to activate action[2] (yaw dormant after 4.48M hover steps). Decision: change the student sensors, not the teacher. Teacher navigates omnidirectionally; 360° camera guarantees target is always visible regardless of heading.
+
+**Camera spec (initial, v1):**
+- Per camera: 64×24 grayscale (64W × 24H)
+- Panorama: 192×24 (concatenated horizontally)
+- Format: (1, 24, 192) float32 [0,1]
+
+**Known issue (discovered post-implementation):**
+- Coin radius=0.12m at 3m distance → ~2.4 pixels diameter at 64px/120° FOV
+- Wiki research confirmed: 1-2px + 0.06 luminance contrast = unreliable for CNN detection
+- Minimum viable: ≥4px + ≥0.15 contrast
+- Fix (v2, pending): increase visual coin radius to 0.25m, switch to RGB (3 channels), darker floor for contrast
+
+**v2 planned changes (before Student A training):**
+- RGB instead of grayscale (coin gold color preserved, 0.84 luminance vs 0.67 wall = +0.17 contrast in R channel)
+- Coin visual radius: 0.12 → 0.25m (collision radius unchanged — teacher reward unaffected)
+- Floor color: darker for luminance contrast
+- Shadows enabled in getCameraImage (ER_TINY_RENDERER supports shadow=1)
+- Report dimensions corrected (192×24 per camera, not 256×64 as written in error)
+
+**CNN architecture:** _CircPadConv2d (circular horizontal padding) → 32→64→64 channels → AdaptiveAvgPool(4,16) → flatten → concat with proprioception(23D) → MLP head → 4D action (Tanh).
+
+**GRU-256:** Temporal memory for velocity/acceleration estimation from image sequence. Also smooths seam transitions as coins cross camera boundaries.
+
+### Data Collection — v1 Run (192×24 grayscale)
+
+**Script:** `scripts/collect_teacher_data.py`
+**Teacher:** Stage_3_Hunter_v4 best_model.zip (CPU inference, VecNormalize loaded)
+**Filter:** success episodes only, steps ≤ 4200 (p90 of Stage 3 v4 successful ep lengths)
+**Chunked saving:** flush every 20 kept episodes to avoid RAM OOM (uncapped accumulation = ~11.6GB at 625K steps)
+
+**v1 run progress (halted at 302/600 — visual issues discovered):**
+- 302 episodes run, 240 kept, 46 crash, 16 too_slow
+- ~628K steps collected
+- Data valid but visual quality insufficient (coins too small in grayscale)
+
+**RAM OOM bug (fixed):** Original script accumulated all panoramas in memory. At ~625K steps × (1×24×192) × float32 = ~11.6GB — exceeded WSL2 12GB limit. Fix: chunked saving, max RAM at any time ≈ 1.5GB.
+
+### Comparison Plan
+
+**Student A:** Behavioral Cloning (BC) on teacher demonstrations. MSE loss on teacher actions.
+**Student B:** PPO from pixels directly (no teacher). Baseline for comparison.
+
+Primary metric: coins collected per episode (partial success). Full SR secondary.
+Key thesis claim: Teacher distillation provides better behavioral prior than end-to-end visual RL at same compute budget.
