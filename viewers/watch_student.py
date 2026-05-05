@@ -84,19 +84,19 @@ def pano_to_display(pano_chw):
     return img
 
 
-def show_camera(img_rgb, ep, step, coins_left, sr, episodes_done):
+def show_camera(img_rgb, ep, step, coins_left, sr):
     label = f"Ep {ep}  step {step}  coins_left={coins_left}  SR={sr:.0%}"
     if HAS_CV2:
         img_bgr = img_rgb[:, :, ::-1].copy()
         cv2.putText(img_bgr, label, (4, 16),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1, cv2.LINE_AA)
-        cv2.imshow("Student Camera (panoramic 360°)", img_bgr)
+        cv2.imshow(WIN_NAME, img_bgr)   # always same window — just updates pixels
         cv2.waitKey(1)
     else:
-        plt.clf()
-        plt.imshow(img_rgb)
-        plt.title(label)
-        plt.axis('off')
+        ax.clear()
+        ax.imshow(img_rgb)
+        ax.set_title(label)
+        ax.axis('off')
         plt.pause(0.001)
 
 
@@ -105,8 +105,12 @@ ep = 0
 successes = 0
 total_coins = 0
 
-if not HAS_CV2:
-    plt.figure(figsize=(12, 2))
+WIN_NAME = "Student Camera (panoramic 360deg)"
+if HAS_CV2:
+    cv2.namedWindow(WIN_NAME, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(WIN_NAME, 1536, 192)
+else:
+    fig, ax = plt.subplots(figsize=(12, 2))
     plt.ion()
     plt.show()
 
@@ -133,7 +137,7 @@ try:
                 img = pano_to_display(pano)
                 coins_left = len(env.gold_data)
                 sr = successes / ep if ep > 0 else 0.0
-                show_camera(img, ep, step, coins_left, sr, ep)
+                show_camera(img, ep, step, coins_left, sr)
 
             obs, reward, terminated, truncated, info = env.step(action)
             ep_reward += reward
