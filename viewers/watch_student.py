@@ -12,6 +12,7 @@ Usage:
 import os, sys, argparse, time
 import numpy as np
 import torch
+from collections import deque
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -91,7 +92,7 @@ def show_camera(img_rgb, ep, step, coins_left, sr):
         cv2.putText(img_bgr, label, (4, 16),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1, cv2.LINE_AA)
         cv2.imshow(WIN_NAME, img_bgr)   # always same window — just updates pixels
-        cv2.waitKey(1)
+        cv2.waitKey(30)
     else:
         ax.clear()
         ax.imshow(img_rgb)
@@ -104,6 +105,7 @@ def show_camera(img_rgb, ep, step, coins_left, sr):
 ep = 0
 successes = 0
 total_coins = 0
+step_times = deque(maxlen=60)   # rolling FPS over last 60 steps
 
 WIN_NAME = "Student Camera (panoramic 360deg)"
 if HAS_CV2:
@@ -124,6 +126,8 @@ try:
         ep_reward = 0.0
 
         while True:
+            t0 = time.perf_counter()
+
             pano = obs['image']       # (C, H, W) — env always outputs CAM_C channels
             vec  = obs['vector']      # (VECTOR_DIM,)
             # If checkpoint is grayscale (1-ch) but env outputs RGB (3-ch), convert
@@ -132,14 +136,18 @@ try:
 
             action = model.predict(pano, vec, device=device)
 
+            obs, reward, terminated, truncated, info = env.step(action)
+
+            step_times.append(time.perf_counter() - t0)
+            fps = 1.0 / (sum(step_times) / len(step_times)) if step_times else 0
+
             # Show camera every stride steps
             if step % args.stride == 0:
                 img = pano_to_display(pano)
                 coins_left = len(env.gold_data)
                 sr = successes / ep if ep > 0 else 0.0
                 show_camera(img, ep, step, coins_left, sr)
-
-            obs, reward, terminated, truncated, info = env.step(action)
+                print(f"\r  step {step:4d} | fps={fps:5.1f} | coins_left={coins_left}", end='', flush=True)
             ep_reward += reward
             step += 1
 
