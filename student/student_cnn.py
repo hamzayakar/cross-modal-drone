@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
-from drone_env.visual_drone_env import PANO_H, PANO_W, VECTOR_DIM
+from drone_env.visual_drone_env import PANO_H, PANO_W, VECTOR_DIM, CAM_C
 
 
 class _CircPadConv2d(nn.Module):
@@ -30,7 +30,7 @@ class StudentNet(nn.Module):
     """
     Standalone student policy for BC training (Student A).
     Input:
-      image  — (B, 1, PANO_H, PANO_W) float32 in [0,1]
+      image  — (B, 3, PANO_H, PANO_W) float32 in [0,1]  RGB
       vector — (B, VECTOR_DIM) float32
     Output:
       action — (B, 4) float32 in [-1, 1] via tanh
@@ -39,7 +39,7 @@ class StudentNet(nn.Module):
         super().__init__()
 
         self.cnn = nn.Sequential(
-            _CircPadConv2d(1, 32, kernel_size=(3, 8), stride=(1, 4)),
+            _CircPadConv2d(CAM_C, 32, kernel_size=(3, 8), stride=(1, 4)),
             nn.ReLU(),
             _CircPadConv2d(32, 64, kernel_size=(3, 4), stride=(2, 2)),
             nn.ReLU(),

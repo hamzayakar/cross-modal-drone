@@ -12,6 +12,7 @@ CAM_W = 64
 N_CAMS = 3
 PANO_H = CAM_H
 PANO_W = CAM_W * N_CAMS  # 192
+CAM_C = 3               # RGB channels
 
 # Student non-visual observation dimensions
 PROP_DIM = 11          # alt(1) + roll,pitch(2) + sin_yaw,cos_yaw(2) + lin_vel(3) + ang_vel(3)
@@ -54,13 +55,15 @@ def render_cameras(client, drone_id, cam_h, cam_w):
             viewMatrix=view_mat,
             projectionMatrix=proj_mat,
             renderer=p.ER_TINY_RENDERER,
+            shadow=1,
+            lightDirection=[1, 1, 1],
             physicsClientId=client,
         )
         rgb = np.array(rgba, dtype=np.float32).reshape(cam_h, cam_w, 4)[:, :, :3]
-        frames.append(rgb.mean(axis=2))  # (H, W) grayscale
+        frames.append(rgb)  # (H, W, 3)
 
-    panorama = np.concatenate(frames, axis=1)            # (H, 3W)
-    return (panorama / 255.0)[np.newaxis].astype(np.float32)  # (1, H, 3W)
+    panorama = np.concatenate(frames, axis=1)              # (H, 3W, 3)
+    return (panorama / 255.0).transpose(2, 0, 1).astype(np.float32)  # (3, H, 3W)
 
 
 def get_proprioception(drone_id, client):
@@ -102,7 +105,7 @@ class CollectionDroneEnv(RoomDroneEnv):
         self.cam_w = cam_w
         self._act_hist = np.zeros(ACT_HIST_LEN * ACT_DIM, dtype=np.float32)
         # Side-channel outputs (updated every step/reset)
-        self.last_panorama       = np.zeros((1, cam_h, cam_w * N_CAMS), dtype=np.float32)
+        self.last_panorama       = np.zeros((CAM_C, cam_h, cam_w * N_CAMS), dtype=np.float32)
         self.last_proprioception = np.zeros(PROP_DIM, dtype=np.float32)
         self.last_act_hist       = np.zeros(ACT_HIST_LEN * ACT_DIM, dtype=np.float32)
 
@@ -139,7 +142,7 @@ class VisualDroneEnv(RoomDroneEnv):
 
         self.observation_space = spaces.Dict({
             'image':  spaces.Box(0.0, 1.0,
-                                 shape=(1, cam_h, cam_w * N_CAMS), dtype=np.float32),
+                                 shape=(CAM_C, cam_h, cam_w * N_CAMS), dtype=np.float32),
             'vector': spaces.Box(-np.inf, np.inf,
                                  shape=(VECTOR_DIM,), dtype=np.float32),
         })
