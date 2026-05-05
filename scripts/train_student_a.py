@@ -92,11 +92,13 @@ def evaluate(model, n_episodes=20, device='cpu'):
 
 # ── Training loop ──────────────────────────────────────────────────────────────
 
-def main(epochs=50, batch_size=256, lr=3e-4, eval_every=10):
+def main(epochs=50, batch_size=256, lr=3e-4, eval_every=10, chunk_dir=None):
+    if chunk_dir is None:
+        chunk_dir = CHUNK_DIR
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"Device: {device}")
 
-    chunks = sorted(glob.glob(os.path.join(CHUNK_DIR, 'chunk_*.npz')))
+    chunks = sorted(glob.glob(os.path.join(chunk_dir, 'chunk_*.npz')))
     if not chunks:
         print(f"No chunks found in {CHUNK_DIR}")
         return
@@ -175,5 +177,7 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type=int,   default=256)
     parser.add_argument('--lr',         type=float, default=3e-4)
     parser.add_argument('--eval_every', type=int,   default=10)
+    parser.add_argument('--chunk_dir',  type=str,   default=None,
+                        help='Chunk directory (default: data/distill/chunks)')
     args = parser.parse_args()
-    main(args.epochs, args.batch_size, args.lr, args.eval_every)
+    main(args.epochs, args.batch_size, args.lr, args.eval_every, args.chunk_dir)
