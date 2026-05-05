@@ -35,11 +35,11 @@ class StudentNet(nn.Module):
     Output:
       action — (B, 4) float32 in [-1, 1] via tanh
     """
-    def __init__(self, pano_h=PANO_H, pano_w=PANO_W, vector_dim=VECTOR_DIM):
+    def __init__(self, pano_h=PANO_H, pano_w=PANO_W, vector_dim=VECTOR_DIM, cam_c=CAM_C):
         super().__init__()
 
         self.cnn = nn.Sequential(
-            _CircPadConv2d(CAM_C, 32, kernel_size=(3, 8), stride=(1, 4)),
+            _CircPadConv2d(cam_c, 32, kernel_size=(3, 8), stride=(1, 4)),
             nn.ReLU(),
             _CircPadConv2d(32, 64, kernel_size=(3, 4), stride=(2, 2)),
             nn.ReLU(),

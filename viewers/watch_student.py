@@ -49,10 +49,12 @@ rw = config['nav_rewards']
 
 # ── Load student model ─────────────────────────────────────────────────────────
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-model = StudentNet().to(device)
-model.load_state_dict(torch.load(args.model, map_location=device))
+state  = torch.load(args.model, map_location=device, weights_only=True)
+cam_c  = state['cnn.0.conv.weight'].shape[1]  # 1=grayscale ckpt, 3=RGB ckpt
+model  = StudentNet(cam_c=cam_c).to(device)
+model.load_state_dict(state)
 model.eval()
-print(f"Loaded student: {args.model}  (device={device})")
+print(f"Loaded student: {args.model}  (device={device}, cam_c={cam_c})")
 
 # ── Environment ────────────────────────────────────────────────────────────────
 env = VisualDroneEnv(
@@ -118,8 +120,11 @@ try:
         ep_reward = 0.0
 
         while True:
-            pano = obs['image']       # (C, H, W)
+            pano = obs['image']       # (C, H, W) — env always outputs CAM_C channels
             vec  = obs['vector']      # (VECTOR_DIM,)
+            # If checkpoint is grayscale (1-ch) but env outputs RGB (3-ch), convert
+            if cam_c == 1 and pano.shape[0] == 3:
+                pano = pano.mean(axis=0, keepdims=True)
 
             action = model.predict(pano, vec, device=device)
 
