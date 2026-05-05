@@ -208,6 +208,7 @@ class RoomDroneEnv(gym.Env):
         # so drone spawn position can be validated against them.
         if not self.hover_only:
             self._spawn_coins_safely()
+        self._initial_coin_count = len(self.gold_data)
 
         start_yaw = self.np_random.uniform(-math.pi, math.pi)
         if self.fixed_spawn:
@@ -549,7 +550,8 @@ class RoomDroneEnv(gym.Env):
 
         # Construct Observation
         obs = self._get_obs()
-        info['is_success'] = is_success
+        info['is_success']      = is_success
+        info['coins_collected'] = self._initial_coin_count - len(self.gold_data)
 
         # Compute Reward
         if self.hover_only:
