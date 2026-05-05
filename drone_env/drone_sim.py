@@ -136,7 +136,7 @@ class RoomDroneEnv(gym.Env):
                 angle = self.np_random.uniform(0, 2 * math.pi)
                 pos = [self.coin_spawn_radius * math.cos(angle),
                        self.coin_spawn_radius * math.sin(angle), 2.0]
-                vs = p.createVisualShape(p.GEOM_SPHERE, radius=0.25, rgbaColor=[1, 1, 1, 1])
+                vs = p.createVisualShape(p.GEOM_SPHERE, radius=0.25, rgbaColor=[1, 0.84, 0, 1])
                 gid = p.createMultiBody(baseMass=0, baseVisualShapeIndex=vs, basePosition=pos)
                 self.gold_data.append({"id": gid, "pos": pos})
                 return
@@ -159,7 +159,7 @@ class RoomDroneEnv(gym.Env):
                 [-1.5, -2.5, 2.0],   # coin 4: ~2.9m, 180° heading change
             ]
             for pos in fixed_positions[:self.num_fixed_coins]:
-                vs = p.createVisualShape(p.GEOM_SPHERE, radius=0.25, rgbaColor=[1, 1, 1, 1])
+                vs = p.createVisualShape(p.GEOM_SPHERE, radius=0.25, rgbaColor=[1, 0.84, 0, 1])
                 gid = p.createMultiBody(baseMass=0, baseVisualShapeIndex=vs, basePosition=pos)
                 self.gold_data.append({"id": gid, "pos": pos})
             return
@@ -187,7 +187,7 @@ class RoomDroneEnv(gym.Env):
             if hit_obstacle:
                 continue
                 
-            vs = p.createVisualShape(p.GEOM_SPHERE, radius=0.25, rgbaColor=[1, 1, 1, 1])
+            vs = p.createVisualShape(p.GEOM_SPHERE, radius=0.25, rgbaColor=[1, 0.84, 0, 1])
             gid = p.createMultiBody(baseMass=0, baseVisualShapeIndex=vs, basePosition=pos)
             self.gold_data.append({"id": gid, "pos": pos})
 

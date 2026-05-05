@@ -46,7 +46,7 @@ def render_cameras(client, drone_id, cam_h, cam_w):
         proj_mat = p.computeProjectionMatrixFOV(
             fov=120.0,
             aspect=float(cam_w) / cam_h,
-            nearVal=0.1,
+            nearVal=0.3,  # clips drone body (~0.25m) without clipping coins (nearest face ≥0.35m at collection)
             farVal=15.0,
         )
         _, _, rgba, _, _ = p.getCameraImage(
