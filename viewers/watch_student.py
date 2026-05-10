@@ -34,7 +34,7 @@ except ImportError:
 
 BASE_DIR    = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 CONFIG_PATH = os.path.join(BASE_DIR, 'configs', 'teacher_ppo.yaml')
-MODEL_PATH  = os.path.join(BASE_DIR, 'models', 'student_a', 'best_model.pt')
+MODEL_PATH  = os.path.join(BASE_DIR, 'models', 'student_a', 'v2', 'best_model.pt')
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--model',  type=str, default=MODEL_PATH)

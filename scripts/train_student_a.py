@@ -1,11 +1,14 @@
 """
 Student A — Behavioral Cloning from teacher demonstrations.
 
-Reads data/distill/chunks/chunk_*.npz sequentially (never loads full dataset
-into RAM). Trains StudentNet with MSE loss, evaluates on live Stage 3 episodes,
+Reads chunk_*.npz files sequentially (never loads full dataset into RAM).
+Trains StudentNet with MSE loss, evaluates on live Stage 3 episodes,
 saves to models/student_a/.
 
 Run after: python scripts/collect_teacher_data.py
+
+Resume a stopped run:
+    python scripts/train_student_a.py --resume --epochs 100 --chunk_dir data/distill/chunks_v2_rgb
 """
 import os, sys, argparse, glob
 import numpy as np
@@ -21,8 +24,9 @@ from drone_env.visual_drone_env import VisualDroneEnv
 
 BASE_DIR    = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 CHUNK_DIR   = os.path.join(BASE_DIR, 'data', 'distill', 'chunks')
-OUT_DIR     = os.path.join(BASE_DIR, 'models', 'student_a')
+OUT_DIR     = os.path.join(BASE_DIR, 'models', 'student_a', 'v2')
 CONFIG_PATH = os.path.join(BASE_DIR, 'configs', 'teacher_ppo.yaml')
+CKPT_PATH   = os.path.join(OUT_DIR, 'latest_checkpoint.pt')
 
 
 # ── Dataset ────────────────────────────────────────────────────────────────────
@@ -31,8 +35,8 @@ class ChunkDataset(Dataset):
     """Wraps a single loaded chunk as a PyTorch Dataset."""
     def __init__(self, chunk_path):
         d = np.load(chunk_path)
-        self.panos   = torch.from_numpy(d['panoramas']).float()  # (N, 1, H, W)
-        self.vectors = torch.from_numpy(d['vectors']).float()    # (N, 23)
+        self.panos   = torch.from_numpy(d['panoramas']).float()  # (N, C, H, W)
+        self.vectors = torch.from_numpy(d['vectors']).float()    # (N, VECTOR_DIM)
         self.actions = torch.from_numpy(d['actions']).float()    # (N, 4)
 
     def __len__(self):
@@ -92,7 +96,8 @@ def evaluate(model, n_episodes=20, device='cpu'):
 
 # ── Training loop ──────────────────────────────────────────────────────────────
 
-def main(epochs=50, batch_size=256, lr=3e-4, eval_every=10, chunk_dir=None):
+def main(epochs=50, batch_size=256, lr=3e-4, eval_every=10, chunk_dir=None,
+         resume=False):
     if chunk_dir is None:
         chunk_dir = CHUNK_DIR
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -100,33 +105,53 @@ def main(epochs=50, batch_size=256, lr=3e-4, eval_every=10, chunk_dir=None):
 
     chunks = sorted(glob.glob(os.path.join(chunk_dir, 'chunk_*.npz')))
     if not chunks:
-        print(f"No chunks found in {CHUNK_DIR}")
+        print(f"No chunks found in {chunk_dir}")
         return
     print(f"Found {len(chunks)} chunks")
 
-    # Count total steps for reporting
     total_steps = sum(np.load(c)['actions'].shape[0] for c in chunks)
     print(f"Total steps: {total_steps:,}  |  chunks: {len(chunks)}")
 
     os.makedirs(OUT_DIR, exist_ok=True)
 
-    model     = StudentNet().to(device)
+    # Detect cam_c from first chunk so StudentNet matches the data
+    sample = np.load(chunks[0])
+    cam_c = sample['panoramas'].shape[1]
+    print(f"Camera channels detected: {cam_c}")
+
+    model     = StudentNet(cam_c=cam_c).to(device)
     optim     = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=epochs)
 
-    best_sr = -1.0
-    print(f"\nTraining Student A (BC) for {epochs} epochs...")
+    start_epoch = 1
+    best_sr     = -1.0
 
-    for epoch in range(1, epochs + 1):
+    if resume:
+        if not os.path.exists(CKPT_PATH):
+            print(f"No checkpoint found at {CKPT_PATH} — starting from scratch.")
+        else:
+            ckpt = torch.load(CKPT_PATH, map_location=device)
+            model.load_state_dict(ckpt['model'])
+            optim.load_state_dict(ckpt['optim'])
+            scheduler.load_state_dict(ckpt['scheduler'])
+            start_epoch = ckpt['epoch'] + 1
+            best_sr     = ckpt['best_sr']
+            print(f"Resumed from epoch {ckpt['epoch']}  best_sr={best_sr*100:.0f}%")
+
+    if start_epoch > epochs:
+        print(f"Already completed {epochs} epochs. Use --epochs N with N > {epochs-1} to extend.")
+        return
+
+    print(f"\nTraining Student A (BC) epochs {start_epoch}–{epochs}...")
+
+    for epoch in range(start_epoch, epochs + 1):
         model.train()
         train_losses = []
 
-        # Shuffle chunk order each epoch so different orderings are seen
         rng = np.random.default_rng(epoch)
         epoch_chunks = rng.permutation(chunks).tolist()
 
-        # Reserve last chunk for validation
-        val_chunk   = epoch_chunks[-1]
+        val_chunk    = epoch_chunks[-1]
         train_chunks = epoch_chunks[:-1]
 
         for cp in train_chunks:
@@ -143,7 +168,6 @@ def main(epochs=50, batch_size=256, lr=3e-4, eval_every=10, chunk_dir=None):
                 optim.step()
                 train_losses.append(loss.item())
 
-        # Validation on held-out chunk
         model.eval()
         val_losses = []
         with torch.no_grad():
@@ -158,14 +182,28 @@ def main(epochs=50, batch_size=256, lr=3e-4, eval_every=10, chunk_dir=None):
         va_l = np.mean(val_losses)
         print(f"Epoch {epoch:3d}/{epochs}  train={tr_l:.5f}  val={va_l:.5f}", flush=True)
 
+        # Save full checkpoint every epoch so resume works at any point
+        torch.save({
+            'epoch':     epoch,
+            'model':     model.state_dict(),
+            'optim':     optim.state_dict(),
+            'scheduler': scheduler.state_dict(),
+            'best_sr':   best_sr,
+        }, CKPT_PATH)
+
         if epoch % eval_every == 0:
             sr, avg_coins = evaluate(model, n_episodes=20, device=device)
+            # Snapshot for inspection (weights only — not for resume)
             torch.save(model.state_dict(),
                        os.path.join(OUT_DIR, f'student_a_ep{epoch}.pt'))
             if sr > best_sr:
                 best_sr = sr
                 torch.save(model.state_dict(),
                            os.path.join(OUT_DIR, 'best_model.pt'))
+                # Update best_sr in the epoch checkpoint too
+                ckpt_data = torch.load(CKPT_PATH, map_location='cpu')
+                ckpt_data['best_sr'] = best_sr
+                torch.save(ckpt_data, CKPT_PATH)
                 print(f"  New best SR={best_sr*100:.0f}% → saved")
 
     print(f"\nDone. Best SR={best_sr*100:.0f}%  → {OUT_DIR}/best_model.pt")
@@ -179,5 +217,8 @@ if __name__ == '__main__':
     parser.add_argument('--eval_every', type=int,   default=10)
     parser.add_argument('--chunk_dir',  type=str,   default=None,
                         help='Chunk directory (default: data/distill/chunks)')
+    parser.add_argument('--resume',     action='store_true',
+                        help='Resume from models/student_a/latest_checkpoint.pt')
     args = parser.parse_args()
-    main(args.epochs, args.batch_size, args.lr, args.eval_every, args.chunk_dir)
+    main(args.epochs, args.batch_size, args.lr, args.eval_every,
+         args.chunk_dir, args.resume)
