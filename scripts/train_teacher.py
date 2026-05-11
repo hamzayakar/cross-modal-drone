@@ -1,3 +1,14 @@
+"""
+Teacher PPO training entry point.
+
+Loads stage configuration from configs/teacher_ppo.yaml and trains a PPO
+agent on RoomDroneEnv. Resumes automatically from the current-stage best
+model if it exists, otherwise loads weights from the previous stage.
+
+Usage:
+    python scripts/train_teacher.py --stage 0   # hover
+    python scripts/train_teacher.py --stage 3   # hunter (loads stage 2 weights)
+"""
 import os
 import sys
 import shutil

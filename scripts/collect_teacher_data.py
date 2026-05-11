@@ -45,6 +45,21 @@ def flush_chunk(chunk_dir, chunk_id, pano_buf, vec_buf, act_buf):
 
 
 def main(n_episodes=600, chunk_dir=None):
+    """
+    Deploy Stage 3 teacher and record demonstration data.
+
+    Runs n_episodes episodes and keeps only those that are both successful
+    (all coins collected) and short enough (≤ MAX_EP_STEPS = 4200), which
+    correspond to the p90 of Stage 3 v4 episode lengths. Slow successful
+    episodes are excluded to avoid injecting suboptimal trajectories.
+
+    Data is written to disk in CHUNK_SIZE-episode batches to avoid RAM
+    overflow from accumulating 1 M+ steps of panorama frames.
+
+    Args:
+        n_episodes: Total episodes to attempt (not all will be kept).
+        chunk_dir: Output directory for chunk_*.npz files.
+    """
     if chunk_dir is None:
         chunk_dir = os.path.join(BASE_DIR, 'data', 'distill', 'chunks_v2_rgb')
 

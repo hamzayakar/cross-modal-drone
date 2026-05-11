@@ -1,47 +1,38 @@
-# Configuration and Secrets
-.env
-.env.*
-
-# Windows / WSL Metadata
-*:Zone.Identifier
-Thumbs.db
-
-# macOS
+# OS / editor
 .DS_Store
+Thumbs.db
+*:Zone.Identifier
+.vscode/
 
-# Python & Machine Learning
+# Python
 __pycache__/
 *.py[cod]
 *.so
-logs/
-checkpoints/
-*.pth
-*.pt
-*.h5
-runs/
-tb_logs/
 
 # Virtual environments
 *venv/
 .venv/
 
-# IDE
-.vscode/
+# Training logs (TensorBoard events)
+logs/
 
-# SB3 model weights and normalization stats
-models/Stage_*/
-models/stage_*/
-models/best/
-models/legacy/
+# Model weight files
 *.zip
 *.pkl
+*.pt
+*.pth
+*.h5
 
-# Claude Code local config (personal assistant schema, not project code)
-CLAUDE.md
-.claude/
+# Model weight directories
+# models/archive/ is intentionally NOT ignored — evaluations.npz + monitor.csv
+# from each run are small and serve as training history evidence.
+models/Stage_*/
+models/stage_*/
+models/student_a/
+models/student_b/
+models/best/
+models/legacy/
 
-# Lab notes / training watch files (research scratchpad, not code)
-training_watch_notes.md
-
-# Assistant reference notes
-docs/tensorboard_parsing.md
+# Training demonstration data (large NPZ chunks, ~3.7 GB total).
+# Reproducible via: python scripts/collect_teacher_data.py --episodes 600
+data/

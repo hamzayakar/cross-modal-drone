@@ -18,6 +18,7 @@ CONFIG_PATH = os.path.join(BASE_DIR, 'configs', 'teacher_ppo.yaml')
 
 
 def make_stage3_visual_env():
+    """Create a Stage 3 VisualDroneEnv (Dict obs, no GUI) from YAML config."""
     with open(CONFIG_PATH) as f:
         config = yaml.safe_load(f)
     sc = config['stages']['stage_3']
@@ -38,12 +39,22 @@ def make_stage3_visual_env():
 
 
 def eval_student_a(n_episodes=20):
+    """
+    Evaluate Student A (BC model) on Stage 3.
+
+    Loads models/student_a/v2/best_model.pt, auto-detects cam_c from weights.
+
+    Returns:
+        successes (list[bool]), rewards (list[float]), ep_lengths (list[int])
+    """
     import torch
     from student.student_cnn import StudentNet
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    model_path = os.path.join(BASE_DIR, 'models', 'student_a', 'best_model.pt')
-    model = StudentNet().to(device)
-    model.load_state_dict(torch.load(model_path, map_location=device))
+    model_path = os.path.join(BASE_DIR, 'models', 'student_a', 'v2', 'best_model.pt')
+    state = torch.load(model_path, map_location=device, weights_only=True)
+    cam_c = state['cnn.0.conv.weight'].shape[1]
+    model = StudentNet(cam_c=cam_c).to(device)
+    model.load_state_dict(state)
     model.eval()
 
     env = make_stage3_visual_env()
@@ -67,6 +78,15 @@ def eval_student_a(n_episodes=20):
 
 
 def eval_student_b(n_episodes=20):
+    """
+    Evaluate Student B (PPO RL model) on Stage 3.
+
+    Loads models/student_b/best_model.zip with a fresh VecNormalize
+    (norm_obs=False, norm_reward=False, training=False).
+
+    Returns:
+        successes (list[bool]), rewards (list[float]), ep_lengths (list[int])
+    """
     from stable_baselines3 import PPO
     from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
     from stable_baselines3.common.monitor import Monitor

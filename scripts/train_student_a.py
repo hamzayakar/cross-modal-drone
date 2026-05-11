@@ -32,7 +32,13 @@ CKPT_PATH   = os.path.join(OUT_DIR, 'latest_checkpoint.pt')
 # ── Dataset ────────────────────────────────────────────────────────────────────
 
 class ChunkDataset(Dataset):
-    """Wraps a single loaded chunk as a PyTorch Dataset."""
+    """
+    Wraps a single .npz chunk file as a PyTorch Dataset.
+
+    Each chunk contains (panoramas, vectors, actions) arrays recorded from
+    teacher demonstrations. Loaded fully into memory per chunk to avoid
+    keeping the entire 1.17 M-step dataset in RAM simultaneously.
+    """
     def __init__(self, chunk_path):
         d = np.load(chunk_path)
         self.panos   = torch.from_numpy(d['panoramas']).float()  # (N, C, H, W)
@@ -49,6 +55,18 @@ class ChunkDataset(Dataset):
 # ── Evaluation ─────────────────────────────────────────────────────────────────
 
 def evaluate(model, n_episodes=20, device='cpu'):
+    """
+    Run live evaluation on Stage 3 (Hunter) environment.
+
+    Args:
+        model: StudentNet instance (set to eval mode internally).
+        n_episodes: Number of episodes to run.
+        device: Torch device string ('cpu' or 'cuda').
+
+    Returns:
+        sr (float): Success rate in [0, 1].
+        avg_coins (float): Mean coins collected per episode (max 4).
+    """
     with open(CONFIG_PATH) as f:
         config = yaml.safe_load(f)
     sc = config['stages']['stage_3']
@@ -98,6 +116,25 @@ def evaluate(model, n_episodes=20, device='cpu'):
 
 def main(epochs=50, batch_size=256, lr=3e-4, eval_every=10, chunk_dir=None,
          resume=False):
+    """
+    Behavioral cloning training loop.
+
+    Reads .npz chunk files one at a time (streaming) to avoid loading the full
+    1.17 M-step dataset into RAM. One random chunk is held out as validation
+    each epoch; the rest are used for training.
+
+    Saves a full checkpoint (model + optimizer + scheduler + epoch + best_sr)
+    after every epoch so training can be resumed at any point.
+
+    Args:
+        epochs: Total number of epochs. Cosine LR annealing uses this as T_max,
+            so epoch 'epochs' is the natural endpoint (LR → 0).
+        batch_size: Mini-batch size for DataLoader.
+        lr: Initial learning rate for Adam (cosine-annealed to 0 over epochs).
+        eval_every: Run live Stage 3 evaluation every N epochs.
+        chunk_dir: Directory containing chunk_*.npz files.
+        resume: If True, load latest_checkpoint.pt and continue from last epoch.
+    """
     if chunk_dir is None:
         chunk_dir = CHUNK_DIR
     device = 'cuda' if torch.cuda.is_available() else 'cpu'

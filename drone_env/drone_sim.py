@@ -9,10 +9,40 @@ import os
 from .reward_functions import compute_dense_reward, compute_hover_reward
 
 class RoomDroneEnv(gym.Env):
-    def __init__(self, gui=False, num_obstacles=0, randomize_obstacles=False, randomize_coins=False,
-                 reward_weights=None, hover_only=False, num_fixed_coins=4, fixed_spawn=False,
-                 max_steps=10800, coin_count_range=(10, 18), coin_z_range=(1.5, 2.5),
+    """
+    PyBullet quadrotor environment for curriculum RL.
+
+    The drone receives 4-D attitude commands (target pitch, roll, yaw rate, thrust)
+    which a low-level PD controller converts to per-motor forces at 240 Hz.
+    The 50-D ego-centric observation contains IMU, body-frame velocities, a compass
+    vector to the nearest coin, and gimbal-stabilized LiDAR (no global position).
+
+    Supports all curriculum stages (0–6) via constructor arguments loaded from
+    configs/teacher_ppo.yaml.
+    """
+
+    def __init__(self, gui=False, num_obstacles=0, randomize_obstacles=False,
+                 randomize_coins=False, reward_weights=None, hover_only=False,
+                 num_fixed_coins=4, fixed_spawn=False, max_steps=10800,
+                 coin_count_range=(10, 18), coin_z_range=(1.5, 2.5),
                  coin_spawn_radius=None, coin_spawn_area=7.0):
+        """
+        Args:
+            gui: Launch PyBullet with GUI window (slow; use for viewers only).
+            num_obstacles: Number of box/cylinder obstacles to spawn.
+            randomize_obstacles: Re-randomize obstacle positions each episode.
+            randomize_coins: Draw coin count from coin_count_range each episode.
+            reward_weights: Dict of reward coefficients loaded from YAML.
+            hover_only: Stage 0 mode — no coins, drone must hold hover_target.
+            num_fixed_coins: Coins to spawn when randomize_coins=False.
+            fixed_spawn: Spawn drone at center (Stage 0) vs random offset.
+            max_steps: Episode truncation limit (stage-dependent).
+            coin_count_range: (min, max) coins when randomize_coins=True.
+            coin_z_range: (z_min, z_max) for random coin altitude.
+            coin_spawn_radius: If set, single coin placed at this radius from
+                origin at a random angle (Stage 1 anti-memorisation).
+            coin_spawn_area: XY half-extent for random coin placement.
+        """
         super().__init__()
 
         self.client = p.connect(p.GUI if gui else p.DIRECT)
@@ -192,6 +222,13 @@ class RoomDroneEnv(gym.Env):
             self.gold_data.append({"id": gid, "pos": pos})
 
     def reset(self, seed=None, options=None):
+        """
+        Reset simulation, respawn room/obstacles/coins/drone.
+
+        Returns:
+            obs (np.ndarray): 50-D ego-centric observation.
+            info (dict): Empty dict (Gymnasium API).
+        """
         super().reset(seed=seed)
         p.resetSimulation(self.client)
         p.setGravity(0, 0, -9.81)
@@ -344,6 +381,21 @@ class RoomDroneEnv(gym.Env):
         return (obs + noise).astype(np.float32)
 
     def step(self, action):
+        """
+        Advance simulation by one physics step (1/240 s).
+
+        Args:
+            action (np.ndarray): 4-D normalized command in [-1, 1]:
+                [target_pitch, target_roll, target_yaw_rate, target_thrust].
+                Mapped to ±30°, ±30°, ±2 rad/s, [0, 19.62] N by the PD controller.
+
+        Returns:
+            obs (np.ndarray): 50-D ego-centric observation (with sensor noise).
+            reward (float): Stage-appropriate reward (hover or dense navigation).
+            terminated (bool): True on success (all coins) or crash.
+            truncated (bool): True when max_steps reached.
+            info (dict): {'is_success': bool, 'coins_collected': int}.
+        """
         self.current_step += 1
         
         # Calculate action smoothness penalty (jerk)
@@ -588,4 +640,5 @@ class RoomDroneEnv(gym.Env):
         return obs, reward, terminated, truncated, info
 
     def close(self):
+        """Disconnect PyBullet physics client."""
         p.disconnect(self.client)

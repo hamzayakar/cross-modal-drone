@@ -15,7 +15,7 @@ import yaml
 from drone_env.visual_drone_env import CollectionDroneEnv, PANO_H, PANO_W, CAM_H, CAM_W
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), '..', 'configs', 'teacher_ppo.yaml')
-OUT_DIR     = os.path.join(os.path.dirname(__file__), '..', 'debug_images')
+OUT_DIR     = os.path.join(os.path.dirname(__file__), '..', 'docs', 'camera_debug')
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--tag', type=str, default=None,

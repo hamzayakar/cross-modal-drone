@@ -33,6 +33,17 @@ def linear_schedule(v):
 
 
 def main():
+    """
+    Train Student B with PPO directly from visual observations (no teacher).
+
+    Uses the same StudentFeatureExtractor CNN architecture as Student A but
+    learns entirely from RL reward signal rather than teacher demonstrations.
+    This is the baseline comparison: if Student A (BC) >> Student B (RL),
+    teacher-guided distillation is proven effective.
+
+    Runs with N_ENVS=4 (vs teacher's 14) because camera rendering is ~5-10×
+    slower than MLP observations, making additional envs CPU-bound.
+    """
     with open(CONFIG_PATH) as f:
         config = yaml.safe_load(f)
     sc = config['stages']['stage_3']
@@ -121,8 +132,9 @@ def main():
     )
 
     print(f"Training Student B (RL from pixels): {TOTAL_TIMESTEPS:,} steps")
+    is_fresh_start = not os.path.exists(current_best)
     model.learn(total_timesteps=TOTAL_TIMESTEPS, tb_log_name=RUN_NAME,
-                callback=eval_cb, reset_num_timesteps=True)
+                callback=eval_cb, reset_num_timesteps=is_fresh_start)
 
     model.save(os.path.join(MODEL_DIR, 'final_model'))
     env_norm.save(os.path.join(MODEL_DIR, 'final_vecnormalize.pkl'))
